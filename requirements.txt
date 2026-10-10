@@ -1,0 +1,9 @@
+# Supported runtime: Python 3.11+
+fastf1
+pandas
+numpy
+scipy
+scikit-learn
+plotly
+streamlit
+pytest

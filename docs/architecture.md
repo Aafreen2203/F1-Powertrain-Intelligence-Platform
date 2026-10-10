@@ -1,0 +1,30 @@
+# Architecture proposal
+
+## Design
+
+Keep public FastF1 telemetry and simulated sensor measurements in separate paths and modules. The Streamlit UI is a thin client over reusable `src` components; pipeline/report code must also run without Streamlit.
+
+```text
+FastF1 public API -> cache -> telemetry loader -> validation -> lap/session analytics -> dashboard/reports
+Synthetic generator -> labelled sensor frames -> validation -> baseline + Isolation Forest -> dashboard/reports
+```
+
+- `src/data/`: FastF1 session retrieval, cache configuration, and seeded synthetic generation.
+- `src/validation/`: schema, ranges, timestamps, duplicates, missingness, and quality summaries.
+- `src/analytics/`: telemetry profiles, lap/session comparisons, and explicitly defined KPIs.
+- `src/models/`: transparent thresholds, time-aware split/evaluation, and Isolation Forest.
+- `src/reporting/`: orchestration and export of tables/reports.
+- `pages/`: Streamlit views; `app.py` provides overview and navigation.
+- `tests/`: deterministic unit tests, with no network dependency.
+
+## Key decisions
+
+1. Treat the source type as part of each dataset's metadata and user-facing presentation. Never impute or synthesize real telemetry; missing channels remain missing and are reported.
+2. Keep downloads and generated outputs out of version control. FastF1 cache location is configurable and defaults to a local ignored directory.
+3. Split synthetic records in time before fitting/evaluating anomaly models, and keep injected labels out of model features. In the labelled synthetic benchmark, labels select normal rows in the earlier training block and evaluate the later holdout.
+4. Define performance KPIs as descriptive comparisons, with session, driver, lap, and conditions attached. Avoid causal claims from observational data.
+5. Keep computations callable outside Streamlit; `src/reporting/pipeline.py` provides the standalone synthetic validation, evaluation, and export workflow.
+
+## Data flow and boundaries
+
+Telemetry retrieval returns provider data with available columns inspected at runtime. Validation reports defects and warnings without silently dropping rows. Analytics only use present signals. Synthetic generation creates a separately labelled dataset and known event intervals. Both sources can feed quality reporting, but synthetic anomaly modeling never trains on telemetry and telemetry is never presented as simulated sensor data.
