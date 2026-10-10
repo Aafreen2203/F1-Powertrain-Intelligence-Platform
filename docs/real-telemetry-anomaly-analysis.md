@@ -58,10 +58,13 @@ potentially unusual telemetry that merits engineering review with driving and
 session context.
 
 Contiguous flagged samples form a segment; any clean or unscored sample breaks
-the segment. The page charts actual provider samples against their distance,
-marks potential anomalies on Speed and RPM traces, and can highlight a chosen
-segment with surrounding distance context. It does not resample or align
-different laps by sample number.
+the segment. The anomaly page charts actual provider samples against their
+distance, marks potential anomalies on Speed and RPM traces, and can highlight
+a chosen segment with surrounding distance context. It analyzes one lap at a
+time. The F1 Telemetry Explorer separately compares selected laps using
+distance alignment and documented interpolation; no page aligns by sample row
+number. See [Phase 8 validation](phase-8-validation.md) for the method and
+observed example.
 
 ## Quality and exports
 

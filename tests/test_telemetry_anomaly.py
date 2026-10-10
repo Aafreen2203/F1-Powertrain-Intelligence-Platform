@@ -5,6 +5,7 @@ import pytest
 from src.analytics.telemetry_anomaly import (
     TelemetryAnalysisError,
     analyze_telemetry,
+    sensitivity_analysis,
     summarize_anomaly_segments,
 )
 from src.reporting.telemetry import PUBLIC_SOURCE, telemetry_export_frames
@@ -107,6 +108,8 @@ def test_gear_shift_context_masks_rpm_change_feature():
     result = analyze_telemetry(telemetry, threshold=100, window=15)
     assert pd.isna(result.samples.loc[40, "anomaly_score"])
     assert not result.samples.loc[40, "is_potential_anomaly"]
+    assert "nGear" not in result.samples["feature_or_channel"].unique()
+    assert {"observed_feature_value", "local_reference_value"}.issubset(result.samples.columns)
 
 
 def test_brake_context_does_not_score_a_braking_speed_transient_as_anomaly():
@@ -147,3 +150,16 @@ def test_exports_include_public_source_session_and_limitation_labels():
     assert "potential anomaly" in report.lower()
     assert "precision" in report.lower()
     assert set(quality_export["data_source"]) == {PUBLIC_SOURCE}
+
+
+def test_sensitivity_analysis_compares_methods_and_settings_without_labels():
+    telemetry = make_telemetry()
+    telemetry.loc[45, "Speed"] = 300
+    result = sensitivity_analysis(telemetry, window=15, random_state=17)
+    assert len(result) == 12
+    assert set(result["method"]) == {"Statistical baseline", "Isolation Forest"}
+    assert set(result.loc[result["method"] == "Statistical baseline", "threshold"]) == {4.0, 6.0, 8.0}
+    assert set(result.loc[result["method"] == "Isolation Forest", "contamination"]) == {0.01, 0.03, 0.08}
+    assert set(result.loc[result["method"] == "Statistical baseline", "window_samples"]) == {7, 15, 30}
+    assert result.loc[result["method"] == "Isolation Forest", "window_samples"].eq(15).all()
+    assert result["any_region_reappears_within_100m_in_same_method"].dtype == bool

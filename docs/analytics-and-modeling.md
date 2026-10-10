@@ -34,6 +34,10 @@ No metric is hardcoded. Results depend on the seed, injected event design, selec
 
 The optional Isolation Forest uses available levels and derived changes, a configured contamination fraction, and a fixed random seed. It is fit and scored on the same selected unlabelled lap. This exploratory in-sample method is not a holdout evaluation. Public FastF1 data has no verified anomaly labels in this application, so real telemetry produces counts, scores, segments, and quality summaries only—not precision, recall, F1, accuracy, false-positive rates, confirmed fault labels, or failure predictions. See [real-telemetry-anomaly-analysis.md](real-telemetry-anomaly-analysis.md) for full feature and interpretation details.
 
+`sensitivity_analysis` rescans the selected lap at several fixed statistical thresholds and preceding-window sizes and Isolation Forest contamination settings. It reports actual flag/segment counts and whether a segment center recurs within 100 m under another setting of the same method. That distance is a descriptive UI heuristic, not a validated tolerance. This view is explicitly sensitivity analysis, not accuracy validation; no labels are accepted by the function and no real-data model performance metrics are calculated.
+
+`align_laps_by_distance` compares same-driver laps on the shared circuit-distance interval, never by row index. Continuous channels and Time are linearly interpolated between adjacent finite provider samples on a 5 m grid; missing gaps are not bridged and there is no extrapolation. Brake and gear use nearest-sample context. The comparison sign is comparison minus reference. Original provider samples remain available for raw plots. Interpolation may smooth transients and cannot control for lap context.
+
 ## Run checks
 
 ```bash

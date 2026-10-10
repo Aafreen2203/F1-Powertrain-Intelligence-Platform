@@ -56,7 +56,7 @@ def _prepare_samples(telemetry: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, o
     # Duplicate distance samples are retained once, deterministically keeping
     # the last provider sample after stable sorting; timestamps stay attached.
     ordered = ordered.sort_values("_distance", kind="stable")
-    ordered = ordered.drop_duplicates("_distance", keep="last")
+    ordered = ordered.drop_duplicates("_distance", keep="last").copy()
     ordered["Distance"] = ordered.pop("_distance")
     channels = [name for name in CORE_CHANNELS if name in ordered.columns]
     if not channels:
@@ -119,7 +119,9 @@ def _prepare_samples(telemetry: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, o
     return ordered.reset_index(drop=True), quality, channels
 
 
-def _context_features(samples: pd.DataFrame, channels: list[str], window: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _context_features(
+    samples: pd.DataFrame, channels: list[str], window: int
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     score_channels = [channel for channel in channels if channel not in {"Brake", "nGear"}]
     context_signals = [channel for channel in channels if channel != "Brake"]
     context = pd.DataFrame({c: samples[f"_signal_{c}"] for c in context_signals})
@@ -155,11 +157,13 @@ def _context_features(samples: pd.DataFrame, channels: list[str], window: int) -
             contextual.loc[shift_context, channel] = np.nan
 
     scores = pd.DataFrame(index=contextual.index)
+    baselines = pd.DataFrame(index=contextual.index)
     min_periods = min(5, max(2, window // 4))
     for column in contextual:
         values = contextual[column].replace([np.inf, -np.inf], np.nan)
         past = values.shift(1)
         center = past.rolling(window=window, min_periods=min_periods).median()
+        baselines[column] = center
         mad = past.rolling(window=window, min_periods=min_periods).apply(
             lambda array: float(np.median(np.abs(array - np.median(array)))), raw=True
         )
@@ -181,7 +185,7 @@ def _context_features(samples: pd.DataFrame, channels: list[str], window: int) -
         scale = scale.where(scale > floor, fallback)
         scale = scale.where(scale > floor, floor)
         scores[column] = (values - center).abs().div(scale)
-    return features, scores.replace([np.inf, -np.inf], np.nan)
+    return features, scores.replace([np.inf, -np.inf], np.nan), baselines
 
 
 def analyze_telemetry(
@@ -204,7 +208,7 @@ def analyze_telemetry(
         raise ValueError("window must be at least 3")
 
     samples, quality, channels = _prepare_samples(telemetry)
-    features, contextual_scores = _context_features(samples, channels, window)
+    features, contextual_scores, local_baselines = _context_features(samples, channels, window)
     max_score = contextual_scores.max(axis=1, skipna=True)
     top_feature = contextual_scores.fillna(-np.inf).idxmax(axis=1)
     top_feature = top_feature.where(contextual_scores.notna().any(axis=1), "")
@@ -235,6 +239,16 @@ def analyze_telemetry(
     samples["anomaly_score"] = scores.to_numpy()
     samples["is_potential_anomaly"] = flags.to_numpy(dtype=bool)
     samples["feature_or_channel"] = top_feature.to_numpy()
+    selected_observed = np.full(len(samples), np.nan)
+    selected_reference = np.full(len(samples), np.nan)
+    for feature in contextual_scores.columns:
+        selected = top_feature.eq(feature).to_numpy()
+        selected_observed[selected] = features[feature].to_numpy()[selected]
+        selected_reference[selected] = local_baselines[feature].to_numpy()[selected]
+    samples["observed_feature_value"] = selected_observed
+    samples["local_reference_value"] = selected_reference
+    samples["configured_threshold"] = effective_threshold
+    samples["configured_contamination"] = contamination
     if method == "Statistical baseline":
         flagged_explanations = [
             f"{feature} exceeded the causal robust-deviation threshold; inspect driving and session context."
@@ -271,12 +285,30 @@ def summarize_anomaly_segments(samples: pd.DataFrame) -> pd.DataFrame:
     """Summarize contiguous flagged sample runs without joining across clean samples."""
     flagged = samples.loc[samples["is_potential_anomaly"]].copy()
     columns = ["segment_id", "sample_count", "distance_start_m", "distance_end_m",
-               "time_start", "time_end", "top_feature", "max_score", "explanation"]
+               "time_start", "time_end", "top_feature", "observed_min", "observed_max",
+               "local_reference_median", "configured_threshold", "configured_contamination",
+               "brake_context", "gear_context", "max_score", "explanation"]
     if flagged.empty:
         return pd.DataFrame(columns=columns)
     rows = []
     for segment_id, part in flagged.groupby("segment_id", dropna=True, sort=True):
         top = part["feature_or_channel"].mode()
+        feature = str(top.iloc[0]) if not top.empty else ""
+        feature_rows = part[part["feature_or_channel"] == feature] if feature else part.iloc[0:0]
+        if "observed_feature_value" in feature_rows:
+            observed = pd.to_numeric(feature_rows["observed_feature_value"], errors="coerce").dropna()
+        else:
+            channel = feature.removesuffix("_change")
+            observed = pd.to_numeric(feature_rows[channel], errors="coerce").dropna() if channel in feature_rows else pd.Series(dtype=float)
+        reference_values = (
+            pd.to_numeric(feature_rows["local_reference_value"], errors="coerce").dropna()
+            if "local_reference_value" in feature_rows else pd.Series(dtype=float)
+        )
+        brake_context = (
+            "brake active" if "Brake" in part and _numeric_signal(part, "Brake").fillna(0).gt(0.5).any()
+            else "brake inactive or unavailable"
+        )
+        gears = part["nGear"].dropna().unique().tolist() if "nGear" in part else []
         row = {
             "segment_id": int(segment_id),
             "sample_count": len(part),
@@ -284,9 +316,63 @@ def summarize_anomaly_segments(samples: pd.DataFrame) -> pd.DataFrame:
             "distance_end_m": float(part["Distance"].max()),
             "time_start": part["Date"].min() if "Date" in part else (part["Time"].min() if "Time" in part else pd.NaT),
             "time_end": part["Date"].max() if "Date" in part else (part["Time"].max() if "Time" in part else pd.NaT),
-            "top_feature": str(top.iloc[0]) if not top.empty else "",
+            "top_feature": feature,
+            "observed_min": float(observed.min()) if len(observed) else float("nan"),
+            "observed_max": float(observed.max()) if len(observed) else float("nan"),
+            "local_reference_median": float(reference_values.median()) if len(reference_values) else float("nan"),
+            "configured_threshold": float(part["configured_threshold"].iloc[0]) if "configured_threshold" in part else float("nan"),
+            "configured_contamination": float(part["configured_contamination"].iloc[0]) if "configured_contamination" in part else float("nan"),
+            "brake_context": brake_context,
+            "gear_context": ", ".join(map(str, gears)) if gears else "unavailable",
             "max_score": float(part["anomaly_score"].max()),
             "explanation": str(part["explanation"].iloc[0]),
         }
         rows.append(row)
     return pd.DataFrame(rows, columns=columns)
+
+
+def sensitivity_analysis(telemetry: pd.DataFrame, *, window: int = 31, random_state: int = 42) -> pd.DataFrame:
+    """Compare real-lap flags across fixed, disclosed settings; this is not validation."""
+    windows = sorted({max(5, window // 2), window, min(101, window * 2)})
+    configurations = [
+        ("Statistical baseline", threshold, 0.03, candidate_window)
+        for candidate_window in windows
+        for threshold in (4.0, 6.0, 8.0)
+    ] + [
+        ("Isolation Forest", 6.0, contamination, window)
+        for contamination in (0.01, 0.03, 0.08)
+    ]
+    evaluated = []
+    for method, threshold, contamination, candidate_window in configurations:
+        result = analyze_telemetry(
+            telemetry,
+            method=method,
+            threshold=threshold,
+            contamination=contamination,
+            window=candidate_window,
+            random_state=random_state,
+        )
+        segments = summarize_anomaly_segments(result.samples)
+        evaluated.append((method, threshold, contamination, candidate_window, result, segments))
+
+    rows = []
+    for method, threshold, contamination, candidate_window, result, segments in evaluated:
+        peers = [part for other_method, _, _, _, _, part in evaluated if other_method == method and part is not segments]
+        centers = ((segments["distance_start_m"] + segments["distance_end_m"]) / 2).tolist()
+        stable = bool(centers) and any(
+            abs(center - other_center) <= 100.0
+            for peer in peers
+            for other_center in ((peer["distance_start_m"] + peer["distance_end_m"]) / 2).tolist()
+            for center in centers
+        )
+        rows.append({
+            "method": method,
+            "threshold": threshold if method == "Statistical baseline" else None,
+            "contamination": contamination if method == "Isolation Forest" else None,
+            "window_samples": candidate_window,
+            "flagged_samples": int(result.quality["potential_anomaly_sample_count"]),
+            "flagged_segments": int(result.quality["potential_anomaly_segment_count"]),
+            "segment_centers_m": centers,
+            "any_region_reappears_within_100m_in_same_method": stable,
+        })
+    return pd.DataFrame(rows)

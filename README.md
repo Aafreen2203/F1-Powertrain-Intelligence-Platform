@@ -50,9 +50,11 @@ Simulated temperature, pressure, vibration, and rotational-speed channels are il
 ## Implemented analysis
 
 - Inspect available telemetry columns and calculate descriptive profiles and lap KPIs.
+- Compare same-event, same-driver laps for Speed, RPM, Throttle, Brake, and gear using circuit distance; raw provider traces remain unmodified and continuous channels are interpolated only for derived differences.
 - Validate required schema, missingness, duplicates, numeric ranges, timestamp order, and sampling intervals without mutating the source data.
 - Compare a configurable robust statistical baseline with Isolation Forest on a chronologically held-out synthetic sensor set.
 - Screen selected real FastF1 laps for contextual potential anomalies with a causal robust baseline or an explicitly in-sample, exploratory Isolation Forest.
+- Explore unlabelled real-lap sensitivity to baseline thresholds/windows and Isolation Forest contamination; this is not accuracy validation.
 
 Metric definitions, fitting protocol, assumptions, and limitations are described in [docs/analytics-and-modeling.md](docs/analytics-and-modeling.md).
 
@@ -73,10 +75,12 @@ Screenshots can be added under `docs/screenshots/`.
 
 ## Dashboard
 
-Run `python -m streamlit run app.py` to open the overview and sidebar pages: F1 Telemetry Explorer, Telemetry Anomaly Analysis, Synthetic Sensor Lab, Data Quality, Model Evaluation, and Engineering Reports. Load the year, event, and session in F1 Telemetry Explorer first; select driver/lap and inspect potential anomalies in Telemetry Anomaly Analysis. Real telemetry anomaly and quality CSVs plus an interpretation-labelled Markdown report can be downloaded from the analysis and Engineering Reports pages. Synthetic sensor summaries and labelled benchmark metrics remain a separate workflow. The real workflow does not substitute simulated data when session loading fails.
+Run `python -m streamlit run app.py` to open the overview and sidebar pages: F1 Telemetry Explorer, Telemetry Anomaly Analysis, Synthetic Sensor Lab, Data Quality, Model Evaluation, and Engineering Reports. Load the year, event, and session in F1 Telemetry Explorer first; select a driver, reference lap, and comparison laps to inspect raw traces, aligned differences, and an evidence-based engineering interpretation. The load button can be used again to reload; the UI reports the successful app load time but does not claim whether FastF1 used network or disk cache, because the loader cannot reliably identify that. Telemetry availability, sample count, channels, and data-quality checks are displayed. Real telemetry anomaly and quality CSVs plus an interpretation-labelled Markdown report can be downloaded from the analysis and Engineering Reports pages. Synthetic sensor summaries and labelled benchmark metrics remain a separate workflow. The real workflow does not substitute simulated data when session loading fails.
+
+The principal question is how a driver's speed and RPM behaviour varies across comparable laps and which deviations merit further investigation. Public telemetry differences can reflect braking, acceleration, shifting, tyres, weather, traffic, setup, and track evolution. They do not establish internal power-unit health. FastF1 does not expose the full internal sensors a powertrain team may use, and the synthetic temperature, pressure, vibration, and RPM channels are simulated. See [Phase 8 validation and methodology](docs/phase-8-validation.md) for the distance alignment, limitations, actual cached-session results, and checks performed.
 
 See [docs/real-telemetry-anomaly-analysis.md](docs/real-telemetry-anomaly-analysis.md) for channel preparation, causal feature construction, methods, scoring limits, and exports. Public FastF1 telemetry is unlabelled and is not internal power-unit instrumentation: no real-world precision/recall/F1 or engine-failure prediction claims are made.
 
 ## Current status
 
-Phases 1–7 established the public-data integration and synthetic benchmark; the real telemetry anomaly workflow is described above. The Phase 7 integration check retrieved the 2026 Bahrain Grand Prix Race using FastF1 3.8.3 on 2026-10-10; see [docs/phase-7-validation.md](docs/phase-7-validation.md) for the observed session data and limitations. Automated tests use local fixtures/mocks and do not require live data access. Python 3.14.7 is the locally inspected runtime; the declared Python 3.11+ range has not been verified on every minor version.
+Phase 8 adds same-event lap comparison, unlabelled anomaly sensitivity analysis, telemetry-level interpretation context, and retrieval diagnostics. The latest local validation used the cached 2026 Bahrain Grand Prix Race session through FastF1 3.8.3; no new uncached network retrieval was claimed. See [docs/phase-8-validation.md](docs/phase-8-validation.md) for measured findings. Automated tests use local fixtures/mocks and do not require live data access. Python 3.14.7 is the locally inspected runtime; the declared Python 3.11+ range has not been verified on every minor version.

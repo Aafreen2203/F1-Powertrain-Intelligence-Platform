@@ -62,6 +62,65 @@ def test_explorer_handles_unavailable_schedule_without_traceback(monkeypatch):
     assert any("simulated network unavailable" in error.value for error in at.error)
 
 
+def test_explorer_compares_differently_sampled_laps_and_reports_retrieval_state(monkeypatch):
+    laps = pd.DataFrame({
+        "Driver": ["1", "1"], "LapNumber": [4, 5],
+        "LapTime": pd.to_timedelta([90, 91], unit="s"),
+        "IsAccurate": [True, True], "PitInTime": [pd.NaT, pd.NaT], "PitOutTime": [pd.NaT, pd.NaT],
+    })
+    session = FakeSession(laps)
+    monkeypatch.setattr(fastf1_loader, "list_events", lambda season: pd.DataFrame({"EventName": ["Example GP"]}))
+    monkeypatch.setattr(fastf1_loader, "load_session", lambda *args: session)
+    monkeypatch.setattr(
+        fastf1_loader,
+        "load_driver_telemetry",
+        lambda _session, _driver, *, lap_number=None: telemetry_frame(80 if lap_number == 4 else 63).assign(
+            Speed=lambda frame: frame["Speed"] + (5 if lap_number == 5 else 0)
+        ),
+    )
+    at = AppTest.from_file(str(ROOT / "pages/1_F1_Telemetry_Explorer.py")).run()
+    at.button[0].click().run()
+    at.button[1].click().run()
+    assert not at.exception
+    assert at.session_state["f1_retrieval_status"]["state"] == "loaded successfully"
+    assert any("cache/network origin" in element.value for element in at.get("caption"))
+    assert any("Engineering Interpretation" in item.value for item in at.subheader)
+    assert any("Largest meaningful channel differences" in item.value for item in at.subheader)
+    assert len(at.get("plotly_chart")) >= 3
+
+
+def test_explorer_discloses_partial_telemetry_without_distance(monkeypatch):
+    laps = pd.DataFrame({
+        "Driver": ["1"], "LapNumber": [4], "LapTime": pd.to_timedelta([90], unit="s"),
+        "IsAccurate": [True], "PitInTime": [pd.NaT], "PitOutTime": [pd.NaT],
+    })
+    session = FakeSession(laps)
+    monkeypatch.setattr(fastf1_loader, "list_events", lambda season: pd.DataFrame({"EventName": ["Example GP"]}))
+    monkeypatch.setattr(fastf1_loader, "load_session", lambda *args: session)
+    monkeypatch.setattr(fastf1_loader, "load_driver_telemetry", lambda *args, **kwargs: pd.DataFrame({"Speed": np.arange(25) + 100}))
+    at = AppTest.from_file(str(ROOT / "pages/1_F1_Telemetry_Explorer.py")).run()
+    at.button[0].click().run()
+    at.button[1].click().run()
+    assert not at.exception
+    assert at.session_state["f1_retrieval_status"]["selected_lap"]["state"] == "partial/incomplete"
+    assert any("no Distance channel" in item.value for item in at.warning)
+
+
+def test_explorer_reports_session_retrieval_failure(monkeypatch):
+    monkeypatch.setattr(fastf1_loader, "list_events", lambda season: pd.DataFrame({"EventName": ["Example GP"]}))
+
+    def fail(*args, **kwargs):
+        raise FastF1DataError("simulated session retrieval failure")
+
+    monkeypatch.setattr(fastf1_loader, "load_session", fail)
+    at = AppTest.from_file(str(ROOT / "pages/1_F1_Telemetry_Explorer.py")).run()
+    at.button[0].click().run()
+    at.button[1].click().run()
+    assert not at.exception
+    assert at.session_state["f1_retrieval_status"]["state"] == "failed"
+    assert any("simulated session retrieval failure" in item.value for item in at.error)
+
+
 def test_telemetry_page_consumes_loaded_session_and_exposes_exports(monkeypatch):
     laps = pd.DataFrame({
         "Driver": ["1"], "LapNumber": [4], "LapTime": pd.to_timedelta([90], unit="s"),
@@ -78,6 +137,10 @@ def test_telemetry_page_consumes_loaded_session_and_exposes_exports(monkeypatch)
     assert any("PUBLIC TELEMETRY" in warning.value for warning in at.warning)
     assert any("Flagged samples" in header.value for header in at.subheader)
     assert len(at.get("download_button")) == 3
+    sensitivity_button = next(button for button in at.button if button.label == "Run sensitivity analysis")
+    sensitivity_button.click().run()
+    assert not at.exception
+    assert len(at.get("dataframe")) >= 1
     assert at.session_state["real_telemetry_anomaly"]["metadata"]["lap"] == 4
 
 

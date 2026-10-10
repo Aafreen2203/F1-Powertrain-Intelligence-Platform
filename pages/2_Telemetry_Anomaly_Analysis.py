@@ -4,6 +4,7 @@ import streamlit as st
 
 from src.analytics.telemetry_anomaly import (
     TelemetryAnalysisError,
+    sensitivity_analysis,
     summarize_anomaly_segments,
 )
 from src.dashboard_data import cached_telemetry_anomaly
@@ -87,6 +88,7 @@ c2.metric("Potential anomaly samples", result.quality["potential_anomaly_sample_
 c3.metric("Contiguous segments", result.quality["potential_anomaly_segment_count"])
 st.caption(f"Available channels: {', '.join(result.available_channels)} · Brake and nGear, when present, supply context and are not scored directly.")
 st.caption(str(result.quality["method_note"]))
+st.info("A sample outlier is a mathematical result, not an engineering concern by itself. Driver inputs, braking, shifts, cornering, tyres, weather, traffic, session type, and data issues may explain unusual public telemetry. FastF1 has no verified anomaly ground truth here; no accuracy, precision, recall, F1, false-positive rate, or failure prediction is available.")
 st.json({key: value for key, value in result.quality.items()
          if key in {"source_ordering_violations", "duplicate_distance_samples_removed",
                     "invalid_distance_samples_removed", "nonfinite_channel_values",
@@ -95,6 +97,17 @@ st.json({key: value for key, value in result.quality.items()
                     "unscored_samples", "warnings"}})
 
 segments = summarize_anomaly_segments(result.samples)
+with st.expander("Sensitivity analysis · not accuracy validation", expanded=False):
+    st.caption("The selected unlabelled lap is rescored at fixed statistical thresholds (4/6/8) and three windows (approximately half, selected, and double the selected window), plus Isolation Forest contamination settings (0.01/0.03/0.08) at the selected window. Random state is fixed at 42. The recurrence column is true when at least one segment center reappears within 100 m under another setting of the same method; it is a descriptive stability check, not ground truth.")
+    st.caption("The extra fits run only after you press the button, so the initial page load does not repeat the selected-lap analysis.")
+    if st.button("Run sensitivity analysis", key="run_telemetry_sensitivity"):
+        try:
+            sensitivity = sensitivity_analysis(telemetry, window=window, random_state=42)
+            st.dataframe(sensitivity, width="stretch", hide_index=True)
+        except (TelemetryAnalysisError, ValueError) as exc:
+            st.warning(f"Sensitivity analysis unavailable for this lap: {exc}")
+    else:
+        st.caption("Run the calculation when needed; the default page load stays focused on the selected analysis.")
 if segments.empty:
     st.success("No samples met the selected anomaly rule on this lap.")
 else:
@@ -105,8 +118,16 @@ else:
     context = st.slider("Context either side (metres)", 25, 1000, 250, 25)
     distance_low = max(float(result.samples["Distance"].min()), selected["distance_start_m"] - context)
     distance_high = min(float(result.samples["Distance"].max()), selected["distance_end_m"] + context)
-    st.caption(f"Segment {selected_segment}: {selected['top_feature']} reached score {selected['max_score']:.2f}. "
-               "Review the full trace and race context; this is not a fault diagnosis.")
+    rule = (
+        f"threshold {selected['configured_threshold']:.2f}"
+        if method == "Statistical baseline"
+        else f"Isolation Forest contamination {selected['configured_contamination']:.2f}"
+    )
+    st.caption(f"Segment {selected_segment}: {selected['top_feature']} reached score {selected['max_score']:.2f} ({rule}). "
+               f"Observed feature values range from {selected['observed_min']:.2f} to {selected['observed_max']:.2f}, "
+               f"with local preceding-window median {selected['local_reference_median']:.2f}; "
+               f"context: {selected['brake_context']}, gear samples {selected['gear_context']}. "
+               "Review the original trace and race context; this is not a fault diagnosis.")
 
 st.subheader("Selected lap telemetry")
 chart_channels = [channel for channel in ("Speed", "RPM", "Throttle", "Brake", "nGear")
@@ -137,7 +158,8 @@ if flagged.empty:
     st.info("There are no flagged samples to list for the current method and settings.")
 else:
     preferred = [c for c in ["Distance", "Date", "Time", "Speed", "RPM", "Throttle", "Brake", "nGear",
-                             "feature_or_channel", "anomaly_score", "segment_id", "explanation"] if c in flagged]
+                             "feature_or_channel", "observed_feature_value", "local_reference_value",
+                             "anomaly_score", "segment_id", "explanation"] if c in flagged]
     st.dataframe(flagged[preferred], width="stretch", hide_index=True)
 
 sample_export, quality_export, report = telemetry_export_frames(
