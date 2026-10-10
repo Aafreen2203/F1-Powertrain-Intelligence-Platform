@@ -8,17 +8,17 @@ The project demonstrates a reproducible data workflow relevant to data strategy 
 
 ## Architecture and data flow
 
-See [docs/architecture.md](docs/architecture.md). Public FastF1 telemetry and synthetic sensor data have separate loaders and analysis paths. Reusable code lives in `src/`; Streamlit pages are a presentation layer; reports and unit tests are independent of the dashboard.
+See [docs/architecture.md](docs/architecture.md). Public FastF1 telemetry and synthetic sensor data have separate loaders and analysis paths. Reusable code lives in `src/`; Streamlit pages are a presentation layer; report exports and unit tests are independent of the dashboard.
 
 ## Setup
 
-Python 3.14.7 was used for the clean setup verification. The dependency file declares Python 3.11+ as its intended range, but this audit did not verify Python 3.11. Create an isolated environment and install the full dependency set before running tests or the dashboard:
+The current local environment uses Python 3.14.7. The dependency file declares Python 3.11+ as its intended range, but not every supported minor version has been verified. Create an isolated environment and install the full dependency set before running tests or the dashboard:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
 Generate a labelled sample without contacting the F1 data service:
@@ -47,11 +47,12 @@ FastF1 provides access to public F1 timing and telemetry data where available. R
 
 Simulated temperature, pressure, vibration, and rotational-speed channels are illustrative only. They are not actual F1 power-unit measurements. Injected anomaly labels describe generated scenarios, not real engine failures.
 
-## Implemented analysis (Phases 3–4)
+## Implemented analysis
 
 - Inspect available telemetry columns and calculate descriptive profiles and lap KPIs.
 - Validate required schema, missingness, duplicates, numeric ranges, timestamp order, and sampling intervals without mutating the source data.
 - Compare a configurable robust statistical baseline with Isolation Forest on a chronologically held-out synthetic sensor set.
+- Screen selected real FastF1 laps for contextual potential anomalies with a causal robust baseline or an explicitly in-sample, exploratory Isolation Forest.
 
 Metric definitions, fitting protocol, assumptions, and limitations are described in [docs/analytics-and-modeling.md](docs/analytics-and-modeling.md).
 
@@ -60,7 +61,7 @@ Metric definitions, fitting protocol, assumptions, and limitations are described
 Run the deterministic test suite with:
 
 ```bash
-pytest
+python -m pytest
 ruff check .
 ```
 
@@ -72,8 +73,10 @@ Screenshots can be added under `docs/screenshots/`.
 
 ## Dashboard
 
-Run `streamlit run app.py` to open the overview and sidebar pages: F1 Telemetry Explorer, Synthetic Sensor Anomaly Analysis, Data Quality, Model Evaluation, and Engineering Reports. Real session retrieval is user-triggered from the telemetry page, and unavailable schedules/sessions/channels produce an error or empty state. CSV quality/model summaries and a Markdown report are downloadable from Engineering Reports. All sample counts, quality summaries, and model metrics are computed from generated data at runtime.
+Run `python -m streamlit run app.py` to open the overview and sidebar pages: F1 Telemetry Explorer, Telemetry Anomaly Analysis, Synthetic Sensor Lab, Data Quality, Model Evaluation, and Engineering Reports. Load the year, event, and session in F1 Telemetry Explorer first; select driver/lap and inspect potential anomalies in Telemetry Anomaly Analysis. Real telemetry anomaly and quality CSVs plus an interpretation-labelled Markdown report can be downloaded from the analysis and Engineering Reports pages. Synthetic sensor summaries and labelled benchmark metrics remain a separate workflow. The real workflow does not substitute simulated data when session loading fails.
+
+See [docs/real-telemetry-anomaly-analysis.md](docs/real-telemetry-anomaly-analysis.md) for channel preparation, causal feature construction, methods, scoring limits, and exports. Public FastF1 telemetry is unlabelled and is not internal power-unit instrumentation: no real-world precision/recall/F1 or engine-failure prediction claims are made.
 
 ## Current status
 
-Phases 1–7 are implemented. The Phase 7 integration check retrieved the 2026 Bahrain Grand Prix Race using FastF1 3.8.3 on 2026-10-10; see [docs/phase-7-validation.md](docs/phase-7-validation.md) for the session date, observed data, warnings, synthetic evaluation metrics, dashboard checks, and limitations. The test suite and Ruff passed in the existing Python 3.14.7 environment. The documented Python 3.11+ range has not been independently verified across every supported version. Unit tests do not require live data access.
+Phases 1–7 established the public-data integration and synthetic benchmark; the real telemetry anomaly workflow is described above. The Phase 7 integration check retrieved the 2026 Bahrain Grand Prix Race using FastF1 3.8.3 on 2026-10-10; see [docs/phase-7-validation.md](docs/phase-7-validation.md) for the observed session data and limitations. Automated tests use local fixtures/mocks and do not require live data access. Python 3.14.7 is the locally inspected runtime; the declared Python 3.11+ range has not been verified on every minor version.

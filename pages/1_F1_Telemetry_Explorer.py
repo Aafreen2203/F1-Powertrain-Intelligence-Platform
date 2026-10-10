@@ -33,6 +33,7 @@ if st.button("Load event list", type="primary"):
         st.session_state.pop("f1_loaded_session", None)
         st.session_state.pop("f1_loaded_key", None)
         st.session_state.pop("f1_telemetry", None)
+        st.session_state.pop("real_telemetry_anomaly", None)
         st.error(f"Public event schedule unavailable: {exc}")
 
 schedule = st.session_state.get("f1_schedule")
@@ -49,11 +50,15 @@ if schedule is not None and st.session_state.get("f1_schedule_season") == int(se
                     session = load_session(int(season), event, session_name)
                     st.session_state["f1_loaded_session"] = session
                     st.session_state["f1_loaded_key"] = (int(season), event, session_name)
+                    st.session_state.pop("real_telemetry_anomaly", None)
+                    st.session_state.pop("anomaly_driver", None)
+                    st.session_state.pop("anomaly_lap", None)
                     st.success("Session loaded.")
                 except FastF1DataError as exc:
                     st.session_state.pop("f1_loaded_session", None)
                     st.session_state.pop("f1_loaded_key", None)
                     st.session_state.pop("f1_telemetry", None)
+                    st.session_state.pop("real_telemetry_anomaly", None)
                     st.error(f"Session data unavailable: {exc}")
 else:
     st.info("Load the event list for the selected season before choosing an event.")
@@ -62,8 +67,13 @@ session = st.session_state.get("f1_loaded_session")
 loaded_key = st.session_state.get("f1_loaded_key")
 if loaded_key != (int(season), selected_event, session_name):
     session = None
+    st.session_state.pop("f1_loaded_session", None)
+    st.session_state.pop("f1_loaded_key", None)
     st.session_state.pop("f1_telemetry", None)
     st.session_state.pop("f1_laps", None)
+    st.session_state.pop("real_telemetry_anomaly", None)
+    st.session_state.pop("anomaly_driver", None)
+    st.session_state.pop("anomaly_lap", None)
 if session is not None:
     drivers = list_drivers(session)
     if not drivers:

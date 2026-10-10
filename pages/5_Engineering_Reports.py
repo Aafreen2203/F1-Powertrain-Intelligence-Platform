@@ -6,6 +6,7 @@ import streamlit as st
 
 from src.dashboard_data import cached_synthetic_data
 from src.models.anomaly import evaluate_anomaly_methods
+from src.reporting.telemetry import telemetry_export_frames
 from src.validation.quality import validate_frame
 
 st.title("Engineering Reports")
@@ -49,3 +50,27 @@ Chronological split index: {evaluation.split_index}. Earlier training records us
 Precision is the share of flags matching injected labels; recall is the share of injected records detected; F1 is their harmonic mean; false-positive rate is the share of normal holdout records flagged. This labelled synthetic benchmark does not establish real-world fault diagnosis or failure prediction.
 """
 st.download_button("Download Markdown report", data=report, file_name=f"synthetic_engineering_report_{now}.md", mime="text/markdown")
+
+st.divider()
+st.subheader("Real FastF1 telemetry review")
+real_review = st.session_state.get("real_telemetry_anomaly")
+if real_review is None:
+    st.info("No real telemetry analysis is available in this app session. Load a session in F1 Telemetry Explorer, then analyse a lap in Telemetry Anomaly Analysis.")
+else:
+    real_result = real_review["result"]
+    real_metadata = real_review["metadata"]
+    real_parameters = real_review["parameters"]
+    sample_frame, real_quality, real_report = telemetry_export_frames(
+        real_result, metadata=real_metadata, parameters=real_parameters
+    )
+    st.caption("PUBLIC FASTF1 TELEMETRY · UNLABELLED · exports contain potential anomalies, not confirmed faults.")
+    st.write(f"{real_metadata['year']} {real_metadata['event']} · {real_metadata['session']} · "
+             f"{real_metadata['driver']} lap {real_metadata['lap']} · "
+             f"{real_result.quality['potential_anomaly_sample_count']} flagged samples")
+    real_stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    st.download_button("Download public telemetry anomaly CSV", sample_frame.to_csv(index=False),
+                       file_name=f"fastf1_telemetry_anomalies_{real_stamp}.csv", mime="text/csv")
+    st.download_button("Download public telemetry quality CSV", real_quality.to_csv(index=False),
+                       file_name=f"fastf1_telemetry_quality_{real_stamp}.csv", mime="text/csv")
+    st.download_button("Download public telemetry report", real_report,
+                       file_name=f"fastf1_telemetry_report_{real_stamp}.md", mime="text/markdown")

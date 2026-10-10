@@ -28,6 +28,12 @@ Metrics are calculated on the held-out later block, with an injected anomaly as 
 
 No metric is hardcoded. Results depend on the seed, injected event design, selected features, time split, baseline threshold, and Isolation Forest contamination setting. The anomaly label marks generated scenarios; detection is not diagnosis, failure prediction, or a claim about genuine power-unit behaviour. There is no validated real failure data here.
 
+## Real FastF1 telemetry review
+
+`src.analytics.telemetry_anomaly.analyze_telemetry` analyzes a selected public lap using available Speed, RPM, Throttle, Brake, and gear channels and requires Distance. It counts and explicitly handles invalid distances, duplicate distances (stable-sort and keep the last provider sample), nonfinite signals, unavailable/constant channels, and samples with no usable signal. It does not impute values. The statistical baseline scores causal robust deviations from preceding samples for Speed/RPM/Throttle levels and changes. When local MAD is tiny, it falls back to preceding-window standard deviation and a 1% underlying-channel scale floor with signal-specific minimums. Brake state and gear are context rather than direct anomaly features; Speed/Throttle levels and changes are masked at braking samples and the following sample, while RPM level/change scores are masked around gear changes. The configurable threshold marks potential anomalies for contextual review.
+
+The optional Isolation Forest uses available levels and derived changes, a configured contamination fraction, and a fixed random seed. It is fit and scored on the same selected unlabelled lap. This exploratory in-sample method is not a holdout evaluation. Public FastF1 data has no verified anomaly labels in this application, so real telemetry produces counts, scores, segments, and quality summaries only—not precision, recall, F1, accuracy, false-positive rates, confirmed fault labels, or failure predictions. See [real-telemetry-anomaly-analysis.md](real-telemetry-anomaly-analysis.md) for full feature and interpretation details.
+
 ## Run checks
 
 ```bash

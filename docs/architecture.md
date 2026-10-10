@@ -6,14 +6,15 @@ Keep public FastF1 telemetry and simulated sensor measurements in separate paths
 
 ```text
 FastF1 public API -> cache -> telemetry loader -> validation -> lap/session analytics -> dashboard/reports
+Loaded FastF1 session -> selected lap -> causal contextual scoring / optional exploratory Isolation Forest -> flagged sample review + explicit download exports
 Synthetic generator -> labelled sensor frames -> validation -> baseline + Isolation Forest -> dashboard/reports
 ```
 
 - `src/data/`: FastF1 session retrieval, cache configuration, and seeded synthetic generation.
 - `src/validation/`: schema, ranges, timestamps, duplicates, missingness, and quality summaries.
-- `src/analytics/`: telemetry profiles, lap/session comparisons, and explicitly defined KPIs.
+- `src/analytics/`: telemetry profiles, lap/session comparisons, descriptive KPIs, and unlabelled per-lap telemetry anomaly screening.
 - `src/models/`: transparent thresholds, time-aware split/evaluation, and Isolation Forest.
-- `src/reporting/`: orchestration and export of tables/reports.
+- `src/reporting/`: standalone synthetic pipeline plus separate, in-memory real telemetry export builders.
 - `pages/`: Streamlit views; `app.py` provides overview and navigation.
 - `tests/`: deterministic unit tests, with no network dependency.
 
@@ -24,7 +25,8 @@ Synthetic generator -> labelled sensor frames -> validation -> baseline + Isolat
 3. Split synthetic records in time before fitting/evaluating anomaly models, and keep injected labels out of model features. In the labelled synthetic benchmark, labels select normal rows in the earlier training block and evaluate the later holdout.
 4. Define performance KPIs as descriptive comparisons, with session, driver, lap, and conditions attached. Avoid causal claims from observational data.
 5. Keep computations callable outside Streamlit; `src/reporting/pipeline.py` provides the standalone synthetic validation, evaluation, and export workflow.
+6. Treat real telemetry flags as exploratory review markers. The causal robust baseline uses preceding samples only; Isolation Forest is fit and scored on the selected unlabelled lap and is not out-of-sample evaluation.
 
 ## Data flow and boundaries
 
-Telemetry retrieval returns provider data with available columns inspected at runtime. Validation reports defects and warnings without silently dropping rows. Analytics only use present signals. Synthetic generation creates a separately labelled dataset and known event intervals. Both sources can feed quality reporting, but synthetic anomaly modeling never trains on telemetry and telemetry is never presented as simulated sensor data.
+Telemetry retrieval returns provider data with available columns inspected at runtime. General validation reports defects and warnings without mutating its input. For anomaly scoring, the telemetry analysis module deliberately sorts by numeric Distance, excludes invalid distances, keeps the last provider sample for duplicate distances, and counts these actions; it never fabricates or imputes values. Synthetic generation creates a separately labelled dataset and known event intervals. Both sources can feed quality reporting, but synthetic anomaly modeling never trains on telemetry and telemetry is never presented as simulated sensor data.

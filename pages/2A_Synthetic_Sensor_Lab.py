@@ -1,10 +1,10 @@
-"""Interactive exploration of clearly labelled synthetic sensor readings."""
+"""Optional exploration of clearly labelled synthetic sensor readings."""
 import plotly.express as px
 import streamlit as st
 
 from src.dashboard_data import cached_synthetic_data
 
-st.title("Synthetic Sensor Anomaly Analysis")
+st.title("Synthetic Sensor Lab")
 st.warning("SYNTHETIC DATA — illustrative simulated readings, not actual F1 power-unit measurements or genuine failures.")
 seed = st.number_input("Reproducible random seed", min_value=0, value=42, step=1)
 n_samples = st.slider("Generated records", min_value=200, max_value=1500, value=700, step=100)
