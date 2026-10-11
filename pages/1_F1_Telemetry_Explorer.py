@@ -202,15 +202,58 @@ else:
                     aligned = comparison_data[int(finding["comparison_lap"])][1]
                     nearest = aligned.iloc[(aligned["Distance"] - finding["distance_m"]).abs().argmin()]
                     values = []
-                    for name, unit in (("Speed", "km/h"), ("RPM", "rpm"), ("Throttle", "%")):
+                    for name, display_name, unit, precision in (
+                        ("Speed", "speed", "km/h", 1),
+                        ("RPM", "engine rotational speed", "RPM", 0),
+                        ("Throttle", "throttle pedal position", "%", 0),
+                    ):
                         ref, comp = f"reference_{name}", f"comparison_{name}"
                         if ref in aligned and comp in aligned and pd.notna(nearest[ref]) and pd.notna(nearest[comp]):
-                            values.append(f"{name} {nearest[ref]:.1f}/{nearest[comp]:.1f} {unit} (reference/comparison)")
+                            fmt = f"{{:.{precision}f}}"
+                            values.append(f"{display_name} was {fmt.format(nearest[ref])}/{fmt.format(nearest[comp])} {unit} on the reference/comparison laps")
                     if "reference_Brake" in aligned and "comparison_Brake" in aligned:
-                        values.append(f"brake {bool(nearest['reference_Brake'])}/{bool(nearest['comparison_Brake'])}")
+                        brake_words = {True: "applied", False: "not applied"}
+                        values.append(f"the brake was {brake_words[bool(nearest['reference_Brake'])]} on the reference lap and {brake_words[bool(nearest['comparison_Brake'])]} on the comparison lap")
                     if "reference_nGear" in aligned and "comparison_nGear" in aligned:
-                        values.append(f"gear {nearest['reference_nGear']}/{nearest['comparison_nGear']}")
+                        values.append(f"the selected gear was {nearest['reference_nGear']}/{nearest['comparison_nGear']} (reference/comparison)")
                     return "; ".join(values) or "No other aligned channels are available at this location."
+
+                def review_finding(channel, finding):
+                    comparison = int(finding["comparison_lap"])
+                    distance_km = finding["distance_m"] / 1000
+                    delta = float(finding["delta_comparison_minus_reference"])
+                    if channel == "Speed":
+                        change = "faster" if delta > 0 else "slower" if delta < 0 else "about as fast"
+                        headline = f"Lap {comparison} was about {abs(delta):.0f} km/h {change} than lap {reference_lap} near {distance_km:.1f} km along the lap."
+                        evidence = f"At that point, the plotted speeds were {finding['reference_value']:.0f} km/h on lap {reference_lap} and {finding['comparison_value']:.0f} km/h on lap {comparison}."
+                        next_step = "Check the brake, throttle, and gear traces at this point, then compare another lap with similar conditions."
+                    elif channel == "RPM":
+                        change = "higher" if delta > 0 else "lower" if delta < 0 else "about the same"
+                        headline = f"The engine was turning about {abs(delta):,.0f} RPM {change} on lap {comparison} near {distance_km:.1f} km along the lap."
+                        evidence = f"The plotted engine speeds were {finding['reference_value']:,.0f} RPM on lap {reference_lap} and {finding['comparison_value']:,.0f} RPM on lap {comparison}. RPM means engine rotations per minute."
+                        next_step = "Check whether the gear changed at this point and compare the surrounding speed and throttle traces on another similar lap."
+                    else:
+                        change = "higher" if delta > 0 else "lower" if delta < 0 else "about the same"
+                        headline = f"The throttle pedal position was about {abs(delta):.0f} percentage points {change} on lap {comparison} near {distance_km:.1f} km along the lap."
+                        evidence = f"The plotted pedal positions were {finding['reference_value']:.0f}% on lap {reference_lap} and {finding['comparison_value']:.0f}% on lap {comparison}."
+                        evidence += " Percentage points describe the gap between the two percentage readings."
+                        next_step = "Compare the speed, brake, and gear traces around this point to understand the driving context."
+                    exact = (
+                        f"Exact distance: {finding['distance_m']:.3f} m. Difference (comparison minus reference): "
+                        f"{finding['delta_comparison_minus_reference']:.6f} {unit_by_channel[channel]}. "
+                        f"Finite aligned coverage: {finding['valid_aligned_samples']}/{finding['aligned_grid_samples']} "
+                        f"({finding['coverage_fraction']:.3%})."
+                    )
+                    st.markdown(
+                        f"**{headline}**  \n"
+                        f"**Evidence:** {evidence}  \n"
+                        f"**Context:** {comparison_context(finding)}. This difference alone does not explain why the laps differed or show a fault.  \n"
+                        f"**Why look closer:** checking the nearby driver inputs can show whether the speed or engine-speed change coincides with a visible driving event.  \n"
+                        f"**Next investigation:** {next_step}"
+                    )
+                    with st.expander(f"Technical Details · {channel} comparison", expanded=False):
+                        st.caption("The review uses the same selected laps and distance-aligned result as the chart.")
+                        st.write(exact)
 
                 channels = [channel for channel in ("Speed", "RPM", "Throttle", "Brake", "nGear")
                             if channel in reference or any(channel in item[0] for item in comparison_data.values())]
@@ -229,15 +272,9 @@ else:
                     if channel in unit_by_channel:
                         finding = finding_for(channel)
                         if finding is None:
-                            st.info(f"**Engineering Review · {channel}:** no finite aligned comparison values are available for this channel.")
+                            st.info(f"There is not enough matching {channel.lower()} data across the selected laps to give a dependable comparison.")
                         else:
-                            st.markdown(
-                                f"**Engineering Review · {channel}**  \n"
-                                f"**Observation:** largest absolute difference is {finding['delta_comparison_minus_reference']:+.2f} {unit_by_channel[channel]} at {finding['distance_m']:.1f} m.  \n"
-                                f"**Evidence:** reference {finding['reference_value']:.2f}; lap {int(finding['comparison_lap'])} {finding['comparison_value']:.2f}; sign is comparison minus reference. Coverage {finding['valid_aligned_samples']}/{finding['aligned_grid_samples']} ({finding['coverage_fraction']:.1%}).  \n"
-                                f"**Context:** {comparison_context(finding)}. This measured difference does not isolate braking, acceleration, cornering, or a fault.  \n"
-                                f"**Next investigation:** compare the adjacent RPM, throttle, brake, and gear traces and review another condition-matched lap."
-                            )
+                            review_finding(channel, finding)
                     elif channel in {"Brake", "nGear"}:
                         context_frames = [(reference_lap, reference), *[(number, pair[0]) for number, pair in comparison_data.items()]]
                         transition_summary = []
@@ -246,12 +283,22 @@ else:
                                 continue
                             values = frame[channel].dropna()
                             transitions = int(values.ne(values.shift()).sum() - (1 if len(values) else 0))
-                            transition_summary.append(f"lap {lap_id}: {transitions} state/gear transitions")
+                            action = "brake switched between applied and not applied" if channel == "Brake" else "gear changes"
+                            transition_summary.append(f"lap {lap_id}: {action} {transitions} times")
+                        if channel == "Brake":
+                            headline = "The graph shows how often the brake changed between applied and not applied."
+                            transition_label = "brake-state changes"
+                            context = "Braking is a normal driver action; a change in brake use is not, by itself, a fault."
+                        else:
+                            headline = "The graph shows the selected gear as the driver moved around the lap."
+                            transition_label = "gear changes"
+                            context = "Gear changes are expected driving behaviour; this chart does not show a transmission fault."
                         st.markdown(
-                            f"**Engineering Review · {channel}**  \n"
-                            f"**Observation:** {('; '.join(transition_summary) or 'channel unavailable')}.  \n"
-                            f"**Context:** brake application and gear changes are normal driver/control behaviour; this view alone does not indicate a fault.  \n"
-                            f"**Next investigation:** compare transition locations with the aligned speed and RPM traces."
+                            f"**{headline}**  \n"
+                            f"**Evidence:** {('; '.join(transition_summary) or 'This channel is unavailable on the selected laps.')}.  \n"
+                            f"**Context:** {context}  \n"
+                            "**Why look closer:** transition locations can be compared with changes in speed and engine speed.  \n"
+                            f"**Next investigation:** inspect the speed and RPM charts around each {transition_label.lower()} to understand what was happening at those points."
                         )
                 st.caption("Raw traces preserve each lap's provider samples. For calculated differences, continuous channels are linearly interpolated and brake/gear context uses the nearest sample on a 5 m grid within the shared distance range. Unequal sampling is not row-matched; interpolation may smooth short transients. Time is interpolated against distance where supplied.")
 
@@ -278,19 +325,48 @@ else:
                         st.plotly_chart(fig, width="stretch")
                         chart_rows = differences[differences["comparison_lap"].eq(number)] if not differences.empty else pd.DataFrame()
                         if chart_rows.empty:
-                            st.info("**Engineering Review:** no finite aligned differences are available in this chart.")
+                            st.info("There is not enough overlapping data to give a dependable difference summary for this chart.")
                         else:
-                            notes = [
-                                f"**{row.channel}:** {row.delta_comparison_minus_reference:+.2f} {unit_by_channel[row.channel]} at {row.distance_m:.1f} m (comparison minus reference; {row.valid_aligned_samples}/{row.aligned_grid_samples} finite grid points)"
+                            largest = chart_rows.loc[chart_rows["delta_comparison_minus_reference"].abs().idxmax()]
+                            channel = str(largest["channel"])
+                            if channel == "Speed":
+                                headline = f"The largest speed gap was about {abs(largest['delta_comparison_minus_reference']):.0f} km/h near {largest['distance_m'] / 1000:.1f} km along the lap."
+                            elif channel == "RPM":
+                                headline = f"The largest engine-speed gap was about {abs(largest['delta_comparison_minus_reference']):,.0f} RPM near {largest['distance_m'] / 1000:.1f} km along the lap."
+                            else:
+                                headline = f"The largest throttle-position gap was about {abs(largest['delta_comparison_minus_reference']):.0f} percentage points near {largest['distance_m'] / 1000:.1f} km along the lap."
+                            evidence_rows = []
+                            for row in chart_rows.itertuples():
+                                if row.channel == "Speed":
+                                    direction = "faster" if row.delta_comparison_minus_reference > 0 else "slower" if row.delta_comparison_minus_reference < 0 else "about as fast"
+                                    evidence_rows.append(f"Speed: lap {number} was {abs(row.delta_comparison_minus_reference):.0f} km/h {direction} at {row.distance_m / 1000:.1f} km")
+                                elif row.channel == "RPM":
+                                    direction = "higher" if row.delta_comparison_minus_reference > 0 else "lower" if row.delta_comparison_minus_reference < 0 else "about the same"
+                                    evidence_rows.append(f"Engine speed: {abs(row.delta_comparison_minus_reference):,.0f} RPM {direction} at {row.distance_m / 1000:.1f} km")
+                                elif row.channel == "Throttle":
+                                    direction = "higher" if row.delta_comparison_minus_reference > 0 else "lower" if row.delta_comparison_minus_reference < 0 else "about the same"
+                                    evidence_rows.append(f"Throttle pedal position: {abs(row.delta_comparison_minus_reference):.0f} percentage points {direction} at {row.distance_m / 1000:.1f} km (gap between two percentage readings)")
+                            technical = " ".join(
+                                f"{row.channel}: exact difference {row.delta_comparison_minus_reference:.6f} {unit_by_channel[row.channel]}, "
+                                f"coverage {row.valid_aligned_samples}/{row.aligned_grid_samples} ({row.coverage_fraction:.3%})."
                                 for row in chart_rows.itertuples() if row.channel in unit_by_channel
-                            ]
-                            st.markdown("**Engineering Review · distance-aligned differences**  \n" + "  \n".join(notes) + "  \nThese are observed differences; braking, shifts, and other conditions are context, not established causes.")
+                            )
+                            st.markdown(
+                                f"**{headline}**  \n"
+                                f"**Evidence:** {'; '.join(evidence_rows)}.  \n"
+                                "**Context:** these are measured differences between the selected laps. The chart cannot identify their cause or establish a fault.  \n"
+                                "**Why look closer:** comparing driver inputs near the same point may help explain the difference.  \n"
+                                "**Next investigation:** review the brake, throttle, gear, and engine-speed traces at the highlighted points, then compare another similar lap."
+                            )
+                            with st.expander("Technical Details · aligned differences", expanded=False):
+                                st.caption("The difference is comparison lap minus reference lap; circuit distance is the point along the lap.")
+                                st.write(technical)
                     else:
                         st.info(f"Lap {number} shares no continuous Speed, RPM, or Throttle channel for a difference trace.")
                 if not differences.empty:
-                    st.subheader("Largest meaningful channel differences")
-                    st.caption("For each selected comparison and continuous shared channel, this reports the maximum absolute aligned difference, its sign (comparison minus reference), and the fraction of shared-grid samples with finite values. Low-speed corners are retained as valid track observations; pit/inaccurate/deleted laps are excluded by available explicit markers.")
-                    st.dataframe(differences.sort_values("delta_comparison_minus_reference", key=lambda values: values.abs(), ascending=False), width="stretch", hide_index=True)
+                    with st.expander("Technical Details · exact channel comparison results", expanded=False):
+                        st.caption("Exact aligned differences and finite coverage for every selected comparison lap.")
+                        st.dataframe(differences.sort_values("delta_comparison_minus_reference", key=lambda values: values.abs(), ascending=False), width="stretch", hide_index=True)
                     comparison_metadata = {
                         "year": season, "event": selected_event, "session": session_name,
                         "driver": driver, "reference_lap": int(reference_lap),

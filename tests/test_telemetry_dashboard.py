@@ -85,8 +85,9 @@ def test_explorer_compares_differently_sampled_laps_and_reports_retrieval_state(
     assert at.session_state["f1_retrieval_status"]["state"] == "loaded successfully"
     assert any("cache/network origin" in element.value.lower() for element in at.get("caption"))
     assert any("did not provide these lap validity markers" in item.value for item in at.warning)
-    assert any("Engineering Review · Speed" in item.value for item in at.markdown)
-    assert any("Largest meaningful channel differences" in item.value for item in at.subheader)
+    assert any("Lap 5 was about" in item.value for item in at.markdown)
+    exact_results = next(element for element in at.get("expander") if element.label == "Technical Details · exact channel comparison results")
+    assert exact_results.proto.expanded is False
     assert len(at.get("plotly_chart")) >= 3
     case_study = at.session_state["f1_lap_comparison"]
     assert case_study["metadata"]["comparison_laps"] == [5]
@@ -94,7 +95,7 @@ def test_explorer_compares_differently_sampled_laps_and_reports_retrieval_state(
     assert case_study["summary"].loc[case_study["summary"]["channel"] == "Speed", "delta_comparison_minus_reference"].iat[0] > 0
     root_elements = list(at.main.children.values())
     first_chart = next(i for i, element in enumerate(root_elements) if type(element).__name__ == "UnknownElement")
-    assert "Engineering Review" in root_elements[first_chart + 1].value
+    assert "Lap 5 was about" in root_elements[first_chart + 1].value
     diagnostics = next(element for element in at.get("expander") if element.label == "Technical Diagnostics")
     assert diagnostics.proto.expanded is False
 
@@ -149,7 +150,7 @@ def test_telemetry_page_consumes_loaded_session_and_exposes_exports(monkeypatch)
     assert len(at.get("download_button")) == 3
     flagged_tables = [table.value for table in at.get("dataframe")]
     assert any({"raw_channel_value", "feature_unit", "local_reference_value", "configured_threshold"}.issubset(table.columns) for table in flagged_tables)
-    assert any("Engineering Review · Speed" in item.value for item in at.markdown)
+    assert any("flagged for review" in item.value or "No unusual" in item.value for item in at.markdown)
     root_elements = list(at.main.children.values())
     chart_positions = [i for i, element in enumerate(root_elements) if type(element).__name__ == "UnknownElement"]
     assert chart_positions
@@ -197,6 +198,7 @@ def test_synthetic_lab_remains_a_separate_labelled_page():
     assert not at.exception
     assert at.title[0].value == "Synthetic Sensor Lab"
     assert any("SYNTHETIC DATA" in warning.value for warning in at.warning)
+    assert any("simulated temperature ranges from" in item.value for item in at.markdown)
 
 
 def test_engineering_reports_expose_real_and_synthetic_downloads_separately():
@@ -261,7 +263,9 @@ def test_model_evaluation_explains_chart_before_held_out_table():
     assert not at.exception
     root_elements = list(at.main.children.values())
     chart_index = next(i for i, element in enumerate(root_elements) if type(element).__name__ == "UnknownElement")
-    assert "Engineering Review · synthetic holdout" in root_elements[chart_index + 1].value
+    assert "higher correctness of flagged readings" in root_elements[chart_index + 1].value
+    details = next(element for element in at.get("expander") if element.label == "Technical Details · evaluation setup")
+    assert details.proto.expanded is False
 
 
 @pytest.mark.parametrize("page", [

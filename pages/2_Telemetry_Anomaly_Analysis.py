@@ -182,13 +182,17 @@ for channel in chart_channels:
         observed = values.dropna()
         if channel == "Brake":
             transitions = int(observed.ne(observed.shift()).sum() - (1 if len(observed) else 0))
-            detail = f"the plotted boolean channel has {transitions} state transitions"
+            detail = f"the brake reading switched between applied and not applied {transitions} times"
         elif channel == "nGear":
             transitions = int(observed.ne(observed.shift()).sum() - (1 if len(observed) else 0))
-            detail = f"the plotted gear channel spans {observed.min():.0f}–{observed.max():.0f} with {transitions} shifts"
+            detail = f"the selected gear ranged from {observed.min():.0f} to {observed.max():.0f}, with {transitions} gear changes"
         else:
-            detail = f"the plotted values span {observed.min():.2f}–{observed.max():.2f} {unit}"
-        st.info(f"**Engineering Review · {channel}:** no flagged feature maps to this raw channel; {detail}. Driver braking and gear shifts are expected inputs, and an overall outlier does not imply a channel fault.")
+            detail = f"the plotted readings ranged from {observed.min():.1f} to {observed.max():.1f} {unit}"
+        st.info(
+            f"**No unusual {channel} reading was singled out by this run.** {detail}. "
+            "This does not prove that the system is fault-free. For brake use and gear changes, "
+            "these are normal driver actions; compare their locations with any flags in other channels."
+        )
     else:
         top = channel_flags.loc[channel_flags["anomaly_score"].idxmax()]
         if "Date" in top and pd.notna(top["Date"]):
@@ -198,22 +202,60 @@ for channel in chart_channels:
         else:
             timestamp = ""
         reference = top.get("local_reference_value")
-        reference_text = f"{reference:.2f} {top['feature_unit']}" if pd.notna(reference) else "unavailable"
+        reference_text = f"{reference:.1f} {top['feature_unit']}" if pd.notna(reference) else "unavailable"
         rule = (f"robust-deviation threshold {top['configured_threshold']:.2f} scale units"
                 if method == "Statistical baseline"
                 else f"negative decision-function boundary > 0; contamination setting {top['configured_contamination']:.2f}")
-        context_values = [f"Speed {top.get('Speed', float('nan')):.1f} km/h",
-                          f"RPM {top.get('RPM', float('nan')):.0f}",
-                          f"Throttle {top.get('Throttle', float('nan')):.1f}%",
-                          f"Brake {top.get('Brake', 'unavailable')}",
-                          f"gear {top.get('nGear', 'unavailable')}"]
-        st.markdown(
-            f"**Engineering Review · {channel}**  \n"
-            f"**Observation:** {top['feature_or_channel']} flag at {top['Distance']:.1f} m{timestamp}.  \n"
-            f"**Evidence:** observed feature {top['observed_feature_value']:.2f} {top['feature_unit']} (raw {top['raw_channel_value']:.2f} {top['raw_channel_unit']}); preceding local reference {reference_text}; score {top['anomaly_score']:.3f} ({top['anomaly_score_definition']}); rule: {rule}.  \n"
-            f"**Context:** {', '.join(context_values)}. This statistical screening result is not a confirmed fault.  \n"
-            f"**Next investigation:** inspect adjacent provider samples and compare another valid lap under similar conditions."
+        feature_base = str(top["feature_or_channel"]).removesuffix("_change")
+        friendly_names = {"Speed": "car speed", "RPM": "engine rotational speed",
+                          "Throttle": "throttle pedal position"}
+        feature_name = friendly_names.get(feature_base, feature_base)
+        raw_value = f"{top['raw_channel_value']:.1f} {top['raw_channel_unit']}"
+        if str(top["feature_or_channel"]).endswith("_change"):
+            headline = f"A change in {feature_name} was flagged for review near {top['Distance'] / 1000:.1f} km along the lap."
+            evidence = (
+                f"The {feature_name} changed by {top['observed_feature_value']:.1f} {top['feature_unit']} "
+                f"between neighboring recorded readings; recent changes were typically around {reference_text}. "
+                f"The plotted {channel.lower()} reading at that point was {raw_value}."
+            )
+        else:
+            headline = f"The {feature_name} reading was flagged for review near {top['Distance'] / 1000:.1f} km along the lap."
+            evidence = (
+                f"The plotted {feature_name} reading was {raw_value}, compared with recent readings around "
+                f"{reference_text}."
+            )
+        context_values = []
+        for column, label, unit, precision in (
+            ("Speed", "car speed", "km/h", 0),
+            ("RPM", "engine speed", "RPM", 0),
+            ("Throttle", "throttle pedal position", "%", 0),
+        ):
+            value = top.get(column)
+            if value is not None and pd.notna(value):
+                unit_text = "RPM (engine rotations per minute)" if column == "RPM" else unit
+                context_values.append(f"{label} {value:,.{precision}f} {unit_text}")
+        brake = top.get("Brake")
+        context_values.append(
+            f"brake pedal {'used' if bool(brake) else 'not used'}" if brake is not None and pd.notna(brake)
+            else "brake reading unavailable"
         )
+        gear = top.get("nGear")
+        context_values.append(f"gear {gear:.0f}" if gear is not None and pd.notna(gear) else "gear unavailable")
+        st.markdown(
+            f"**{headline}**  \n"
+            f"**Evidence:** {evidence} {timestamp}  \n"
+            f"**Nearby readings:** {', '.join(context_values)}.  \n"
+            "**Why look closer:** the selected statistical method found this sample unusual compared with nearby observations; unusual does not mean damaged or faulty.  \n"
+            "**Next investigation:** inspect the readings immediately before and after this point, then compare a valid lap driven in similar conditions."
+        )
+        with st.expander(f"Technical Details · {channel} flag", expanded=False):
+            st.caption(f"Analysis feature: {top['feature_or_channel']}. {top['feature_definition']}")
+            st.write(
+                f"Exact point along lap: {top['Distance']:.3f} m. Raw {channel}: {raw_value}. "
+                f"Observed feature: {top['observed_feature_value']:.6f} {top['feature_unit']}; "
+                f"recent reference: {reference_text}. Score: {top['anomaly_score']:.6f} "
+                f"({top['anomaly_score_definition']}); selected rule: {rule}."
+            )
 
 st.subheader("Flagged samples")
 flagged = result.samples[result.samples["is_potential_anomaly"]].copy()
