@@ -190,6 +190,41 @@ def test_explorer_reports_session_retrieval_failure(monkeypatch):
     assert not at.exception
     assert at.session_state["f1_retrieval_status"]["state"] == "failed"
     assert any("simulated session retrieval failure" in item.value for item in at.error)
+    assert any("retry" in item.value.lower() and "another event or session" in item.value.lower() for item in at.info)
+
+
+def test_fastf1_diagnostic_page_checks_two_sessions_and_reports_safe_failure(monkeypatch):
+    laps = pd.DataFrame({
+        "Driver": ["1", "1"],
+        "LapNumber": [1, 2],
+        "LapTime": pd.to_timedelta([90, 91], unit="s"),
+    })
+    calls = []
+
+    def diagnostic_load(year, event, session_code):
+        calls.append((year, event, session_code))
+        if session_code == "FP1":
+            raise FastF1DataError("Timing data could not be retrieved. Retry or choose another session.")
+        return FakeSession(laps)
+
+    monkeypatch.setattr(fastf1_loader, "load_session", diagnostic_load)
+    at = AppTest.from_file(str(ROOT / "pages/3_FastF1_Retrieval_Diagnostics.py")).run()
+    at.button[0].click().run()
+
+    assert not at.exception
+    assert calls == [
+        (2024, "Bahrain Grand Prix", "FP1"),
+        (2024, "Bahrain Grand Prix", "FP2"),
+    ]
+    diagnostic_table = at.dataframe[0].value
+    assert pd.isna(diagnostic_table.loc[0, "Lap rows"])
+    assert diagnostic_table.loc[1, "Lap rows"] == 2
+    assert diagnostic_table["Timing validation"].tolist() == [
+        "failed or unavailable",
+        "usable lap timing returned",
+    ]
+    assert "FastF1DataError" in diagnostic_table.loc[0, "Exception"]
+    assert diagnostic_table.loc[1, "Timed laps"] == 2
 
 
 def test_telemetry_page_consumes_loaded_session_and_exposes_exports(monkeypatch):

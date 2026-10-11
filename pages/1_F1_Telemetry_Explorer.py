@@ -76,6 +76,7 @@ if schedule is not None and st.session_state.get("f1_schedule_season") == int(se
                         st.session_state.pop(key, None)
                     st.session_state["f1_retrieval_status"] = {"state": "failed", "error": str(exc)}
                     st.error(f"Session data unavailable: {exc}")
+                    st.info("Press **Load / reload selected session** to retry, or choose another event or session.")
 else:
     st.info("Load the event list for the selected season before choosing an event.")
 

@@ -99,6 +99,18 @@ def test_session_loading_failure_is_not_returned_as_success(monkeypatch):
         load_session(2024, "Example GP", "R")
 
 
+def test_cache_initialization_failure_is_not_reported_as_missing_timing(monkeypatch):
+    def fail_cache(*_args, **_kwargs):
+        raise FastF1DataError("FastF1 cache could not be initialized.")
+
+    monkeypatch.setattr("src.data.fastf1_loader.enable_cache", fail_cache)
+
+    with pytest.raises(FastF1DataError, match="cache could not be initialized") as error:
+        load_session(2024, "Example GP", "R")
+
+    assert "Timing data could not be retrieved" not in str(error.value)
+
+
 def test_partial_fastf1_load_is_rejected_and_soft_failure_is_logged(monkeypatch, caplog):
     class PartialSession:
         @property
@@ -119,7 +131,7 @@ def test_partial_fastf1_load_is_rejected_and_soft_failure_is_logged(monkeypatch,
     monkeypatch.setitem(sys.modules, "fastf1", SimpleNamespace(get_session=lambda *_args: session))
 
     with caplog.at_level(logging.WARNING, logger="src.data.fastf1_loader"):
-        with pytest.raises(FastF1DataError, match="without loaded lap data"):
+        with pytest.raises(FastF1DataError, match="Timing data could not be retrieved.*Retry or choose another session"):
             load_session(2025, "Bahrain Grand Prix", "FP1")
 
     assert "lap timing data" in caplog.text
@@ -142,7 +154,7 @@ def test_session_without_timed_laps_is_not_a_successful_load(monkeypatch):
     monkeypatch.setattr("src.data.fastf1_loader.enable_cache", lambda *_args, **_kwargs: None)
     monkeypatch.setitem(sys.modules, "fastf1", SimpleNamespace(get_session=lambda *_args: session))
 
-    with pytest.raises(FastF1DataError, match="no timed lap records"):
+    with pytest.raises(FastF1DataError, match="Timing data could not be retrieved.*Retry or choose another session"):
         load_session(2025, "Bahrain Grand Prix", "FP1")
 
 
@@ -167,7 +179,7 @@ def test_retry_after_partial_load_creates_a_fresh_session(monkeypatch):
         get_session=lambda *_args: next(sessions)
     ))
 
-    with pytest.raises(FastF1DataError, match="without loaded lap data"):
+    with pytest.raises(FastF1DataError, match="Timing data could not be retrieved.*Retry or choose another session"):
         load_session(2025, "Bahrain Grand Prix", "FP1")
 
     assert load_session(2025, "Bahrain Grand Prix", "FP1") is valid

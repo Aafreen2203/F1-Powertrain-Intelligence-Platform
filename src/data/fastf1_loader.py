@@ -127,8 +127,9 @@ def load_session(
     """Load and return a FastF1 Session; telemetry loading is optional."""
     if not session_name or not str(session_name).strip():
         raise ValueError("session_name must be supplied (for example 'Q' or 'R').")
+    # Keep cache setup failures distinct from API/timing retrieval failures.
+    enable_cache(cache_dir)
     try:
-        enable_cache(cache_dir)
         import fastf1
         session = fastf1.get_session(int(season), event, str(session_name))
         with _capture_fastf1_partial_failures(f"{season} {event} {session_name}"):
@@ -161,8 +162,16 @@ def load_session(
         )
         return session
     except FastF1DataError:
-        logger.exception("FastF1 session retrieval did not produce usable lap data")
-        raise
+        logger.exception(
+            "FastF1 session retrieval did not produce usable timing data for %s %s %s",
+            season,
+            event,
+            session_name,
+        )
+        raise FastF1DataError(
+            f"Timing data could not be retrieved for {season} {event} {session_name}. "
+            "Retry or choose another session."
+        ) from None
     except ValueError as exc:
         logger.exception(
             "FastF1 rejected season=%s event=%s session=%s",
