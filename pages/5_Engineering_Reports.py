@@ -6,6 +6,7 @@ import streamlit as st
 
 from src.dashboard_data import cached_synthetic_data
 from src.models.anomaly import evaluate_anomaly_methods
+from src.reporting.lap_comparison import lap_comparison_exports
 from src.reporting.telemetry import telemetry_export_frames
 from src.validation.quality import validate_frame
 
@@ -61,7 +62,8 @@ else:
     real_metadata = real_review["metadata"]
     real_parameters = real_review["parameters"]
     sample_frame, real_quality, real_report = telemetry_export_frames(
-        real_result, metadata=real_metadata, parameters=real_parameters
+        real_result, metadata=real_metadata, parameters=real_parameters,
+        retrieval=real_review.get("retrieval"),
     )
     st.caption("PUBLIC FASTF1 TELEMETRY · UNLABELLED · exports contain potential anomalies, not confirmed faults.")
     st.write(f"{real_metadata['year']} {real_metadata['event']} · {real_metadata['session']} · "
@@ -74,3 +76,19 @@ else:
                        file_name=f"fastf1_telemetry_quality_{real_stamp}.csv", mime="text/csv")
     st.download_button("Download public telemetry report", real_report,
                        file_name=f"fastf1_telemetry_report_{real_stamp}.md", mime="text/markdown")
+
+comparison = st.session_state.get("f1_lap_comparison")
+if comparison is None:
+    st.info("No calculated public FastF1 lap comparison is available in this app session. Select eligible laps in F1 Telemetry Explorer first.")
+else:
+    comparison_frame, comparison_report = lap_comparison_exports(
+        comparison["summary"], metadata=comparison["metadata"]
+    )
+    st.divider()
+    st.subheader("Public FastF1 lap-comparison case study")
+    st.caption("Calculated distance-aligned values · comparison minus reference · observational, not a power-unit diagnosis.")
+    st.dataframe(comparison_frame, width="stretch", hide_index=True)
+    st.download_button("Download public lap comparison CSV", comparison_frame.to_csv(index=False),
+                       file_name="fastf1_lap_comparison.csv", mime="text/csv")
+    st.download_button("Download public lap comparison report", comparison_report,
+                       file_name="fastf1_lap_comparison_report.md", mime="text/markdown")

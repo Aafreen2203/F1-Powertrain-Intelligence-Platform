@@ -83,10 +83,20 @@ def test_explorer_compares_differently_sampled_laps_and_reports_retrieval_state(
     at.button[1].click().run()
     assert not at.exception
     assert at.session_state["f1_retrieval_status"]["state"] == "loaded successfully"
-    assert any("cache/network origin" in element.value for element in at.get("caption"))
-    assert any("Engineering Interpretation" in item.value for item in at.subheader)
+    assert any("cache/network origin" in element.value.lower() for element in at.get("caption"))
+    assert any("did not provide these lap validity markers" in item.value for item in at.warning)
+    assert any("Engineering Review · Speed" in item.value for item in at.markdown)
     assert any("Largest meaningful channel differences" in item.value for item in at.subheader)
     assert len(at.get("plotly_chart")) >= 3
+    case_study = at.session_state["f1_lap_comparison"]
+    assert case_study["metadata"]["comparison_laps"] == [5]
+    assert "coverage_fraction" in case_study["summary"]
+    assert case_study["summary"].loc[case_study["summary"]["channel"] == "Speed", "delta_comparison_minus_reference"].iat[0] > 0
+    root_elements = list(at.main.children.values())
+    first_chart = next(i for i, element in enumerate(root_elements) if type(element).__name__ == "UnknownElement")
+    assert "Engineering Review" in root_elements[first_chart + 1].value
+    diagnostics = next(element for element in at.get("expander") if element.label == "Technical Diagnostics")
+    assert diagnostics.proto.expanded is False
 
 
 def test_explorer_discloses_partial_telemetry_without_distance(monkeypatch):
@@ -137,6 +147,15 @@ def test_telemetry_page_consumes_loaded_session_and_exposes_exports(monkeypatch)
     assert any("PUBLIC TELEMETRY" in warning.value for warning in at.warning)
     assert any("Flagged samples" in header.value for header in at.subheader)
     assert len(at.get("download_button")) == 3
+    flagged_tables = [table.value for table in at.get("dataframe")]
+    assert any({"raw_channel_value", "feature_unit", "local_reference_value", "configured_threshold"}.issubset(table.columns) for table in flagged_tables)
+    assert any("Engineering Review · Speed" in item.value for item in at.markdown)
+    root_elements = list(at.main.children.values())
+    chart_positions = [i for i, element in enumerate(root_elements) if type(element).__name__ == "UnknownElement"]
+    assert chart_positions
+    assert all(type(root_elements[i + 1]).__name__ in {"Markdown", "Info"} for i in chart_positions)
+    diagnostics = next(element for element in at.get("expander") if element.label == "Technical Diagnostics")
+    assert diagnostics.proto.expanded is False
     sensitivity_button = next(button for button in at.button if button.label == "Run sensitivity analysis")
     sensitivity_button.click().run()
     assert not at.exception
@@ -181,6 +200,7 @@ def test_synthetic_lab_remains_a_separate_labelled_page():
 
 
 def test_engineering_reports_expose_real_and_synthetic_downloads_separately():
+    from src.analytics.lap_comparison import align_laps_by_distance, lap_difference_summary
     from src.analytics.telemetry_anomaly import analyze_telemetry
 
     telemetry = telemetry_frame()
@@ -191,14 +211,68 @@ def test_engineering_reports_expose_real_and_synthetic_downloads_separately():
         "metadata": {"year": 2026, "event": "Example GP", "session": "R", "driver": "1", "lap": 4},
         "parameters": {"method": "Statistical baseline", "threshold": 6.0, "contamination": 0.03, "window": 31},
     }
+    reference = telemetry_frame()
+    comparison = telemetry_frame().assign(Speed=lambda frame: frame["Speed"] + 3)
+    aligned = align_laps_by_distance(reference, comparison)
+    at.session_state["f1_lap_comparison"] = {
+        "metadata": {
+            "year": 2026, "event": "Example GP", "session": "R", "driver": "1",
+            "reference_lap": 4, "comparison_laps": [5],
+            "alignment_method": "test 5 m grid",
+            "retrieval": {"cache_origin": "unknown"},
+            "lap_context": [],
+        },
+        "summary": lap_difference_summary(aligned).assign(comparison_lap=5),
+        "aligned": {5: aligned},
+    }
     at.run()
     assert not at.exception
-    assert len(at.get("download_button")) == 6
+    assert len(at.get("download_button")) == 8
     public_labels = [button.label for button in at.get("download_button") if "public telemetry" in button.label.lower()]
     assert len(public_labels) == 3
+    assert any("lap comparison CSV" in button.label for button in at.get("download_button"))
+
+
+def test_overview_has_actionable_empty_state_and_separate_data_sources():
+    at = AppTest.from_file(str(ROOT / "app.py")).run()
+    assert not at.exception
+    assert any("No real session is loaded" in item.value for item in at.info)
+    assert any("No comparison result is available" in item.value for item in at.info)
+    assert any("Synthetic Sensor Lab" in link.label for link in at.get("page_link"))
 
 
 @pytest.mark.parametrize("page", ["pages/3_Data_Quality.py", "pages/4_Model_Evaluation.py"])
 def test_existing_synthetic_quality_and_evaluation_pages_still_render(page):
     at = AppTest.from_file(str(ROOT / page)).run()
     assert not at.exception
+
+
+def test_data_quality_diagnostics_are_collapsed_and_primary_results_are_structured():
+    at = AppTest.from_file(str(ROOT / "pages/3_Data_Quality.py")).run()
+    assert not at.exception
+    assert len(at.dataframe) == 1
+    diagnostic = next(element for element in at.get("expander") if element.label == "Technical Diagnostics")
+    assert diagnostic.proto.expanded is False
+    assert len(at.get("json")) == 1
+
+
+def test_model_evaluation_explains_chart_before_held_out_table():
+    at = AppTest.from_file(str(ROOT / "pages/4_Model_Evaluation.py")).run()
+    assert not at.exception
+    root_elements = list(at.main.children.values())
+    chart_index = next(i for i, element in enumerate(root_elements) if type(element).__name__ == "UnknownElement")
+    assert "Engineering Review · synthetic holdout" in root_elements[chart_index + 1].value
+
+
+@pytest.mark.parametrize("page", [
+    "app.py", "pages/1_F1_Telemetry_Explorer.py", "pages/2_Telemetry_Anomaly_Analysis.py",
+    "pages/3_Data_Quality.py", "pages/4_Model_Evaluation.py", "pages/5_Engineering_Reports.py",
+    "pages/2A_Synthetic_Sensor_Lab.py",
+])
+def test_no_raw_json_is_top_level_on_any_dashboard_page(page):
+    at = AppTest.from_file(str(ROOT / page)).run()
+    assert not at.exception
+    assert all(type(element).__name__ != "Json" for element in at.main.children.values())
+    for expander in at.get("expander"):
+        if expander.label == "Technical Diagnostics":
+            assert expander.proto.expanded is False

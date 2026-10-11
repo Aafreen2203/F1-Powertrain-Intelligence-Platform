@@ -12,6 +12,13 @@ data = cached_synthetic_data(n_samples=n_samples, seed=seed)
 signal = st.selectbox("Sensor channel", ["temperature_c", "pressure_kpa", "vibration_mm_s", "rotational_speed_rpm"])
 fig = px.line(data, x="timestamp", y=signal, color="event_label", title=f"SYNTHETIC · {signal}", labels={"event_label": "Injected scenario"})
 st.plotly_chart(fig, width="stretch")
+st.markdown(
+    f"**Engineering Review · synthetic {signal}**  \n"
+    f"**Observation:** the chart shows simulated {signal} grouped by injected scenario.  \n"
+    f"**Evidence:** generated values span {data[signal].min():.2f} to {data[signal].max():.2f}; scenario counts are shown below.  \n"
+    "**Context:** these are seeded illustrative sensor readings, not FastF1 channels or measured engine behaviour.  \n"
+    "**Next investigation:** use Model Evaluation to compare synthetic flags against the injected labels."
+)
 st.subheader("Generated event labels")
 events = data[data["anomaly_label"].eq(1)].groupby("event_label", as_index=False).agg(records=("anomaly_label", "size"), start=("timestamp", "min"), end=("timestamp", "max"))
 st.dataframe(events, width="stretch", hide_index=True)

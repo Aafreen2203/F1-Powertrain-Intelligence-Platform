@@ -6,6 +6,7 @@ imports are lazy so synthetic-only workflows and unit tests need no network.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,10 @@ def enable_cache(cache_dir: str | Path | None = None) -> Path:
         import fastf1
     except ImportError as exc:
         raise FastF1DataError("FastF1 is required for public telemetry retrieval.") from exc
-    path = Path(cache_dir or os.getenv("F1_CACHE_DIR", ".fastf1-cache")).expanduser()
+    configured_cache = cache_dir or os.getenv("F1_CACHE_DIR")
+    path = Path(configured_cache).expanduser() if configured_cache else (
+        Path(tempfile.gettempdir()) / "f1-powertrain-fastf1-cache"
+    )
     path.mkdir(parents=True, exist_ok=True)
     fastf1.Cache.enable_cache(str(path))
     return path

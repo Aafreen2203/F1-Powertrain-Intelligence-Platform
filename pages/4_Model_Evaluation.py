@@ -20,9 +20,21 @@ try:
     st.dataframe(display_metrics, width="stretch", hide_index=True)
     metric_name = st.selectbox("Metric chart", ["precision", "recall", "f1", "false_positive_rate"])
     st.plotly_chart(px.bar(result.metrics, x="model", y=metric_name, range_y=[0, 1], title=f"SYNTHETIC · {metric_name.replace('_', ' ').title()}"), width="stretch")
+    metric_help = {
+        "precision": "share of flagged holdout records that match injected labels",
+        "recall": "share of injected holdout records detected",
+        "f1": "harmonic mean of precision and recall",
+        "false_positive_rate": "share of normal holdout records flagged",
+    }
+    st.markdown(
+        f"**Engineering Review · synthetic holdout {metric_name.replace('_', ' ')}**  \n"
+        f"**Observation:** {metric_name.replace('_', ' ').title()} is plotted for each method.  \n"
+        f"**Evidence:** {metric_help[metric_name]}; the chart values are calculated from the later chronological holdout at the selected settings.  \n"
+        "**Context:** injected synthetic labels support this benchmark only; the clean-normal training assumption is favorable and Isolation Forest contamination is not measured fault prevalence.  \n"
+        "**Limitation:** these results do not describe unlabelled FastF1 data, real power-unit faults, or failure prediction."
+    )
     st.subheader("Held-out flag review")
     flags = result.predictions[result.predictions["baseline_flag"].eq(1) | result.predictions["isolation_forest_flag"].eq(1)]
     st.dataframe(flags.head(100), width="stretch", hide_index=True)
 except (ValueError, ImportError) as exc:
     st.error(f"Could not evaluate models: {exc}")
-st.markdown("**Metrics:** precision is the share of flags matching injected labels; recall is the share of injected records found; F1 balances precision and recall; false-positive rate is the share of normal holdout records flagged. See `docs/analytics-and-modeling.md` for definitions and limitations. The clean-normal training assumption is favorable; Isolation Forest contamination is not a measured fault prevalence. Flags are anomaly indicators, not diagnosis or failure prediction.")

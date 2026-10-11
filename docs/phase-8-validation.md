@@ -55,7 +55,9 @@ sensitivity button; normal page load does not repeat them.
 
 The flow remains `list_events` → `load_session` → `list_drivers` →
 `load_driver_telemetry` → distance alignment or analysis → dashboard/export.
-FastF1's disk cache is enabled at `.fastf1-cache` by default. The app provides
+At the time of this Phase 8 validation, the local cache was explicitly set to
+`.fastf1-cache`; the current default is the system temporary directory, with
+`F1_CACHE_DIR` and `cache_dir` overrides. The app provides
 an explicit load/reload button, a UTC timestamp for when the load call returned,
 selected driver/lap, sample count, available channel list, and quality validation. The
 loader does not expose reliable cache-hit versus network-fetch provenance, so

@@ -12,7 +12,7 @@ See [docs/architecture.md](docs/architecture.md). Public FastF1 telemetry and sy
 
 ## Setup
 
-The current local environment uses Python 3.14.7. The dependency file declares Python 3.11+ as its intended range, but not every supported minor version has been verified. Create an isolated environment and install the full dependency set before running tests or the dashboard:
+The project configuration targets Python 3.11 or newer; Python 3.11 is the CI version. The local development environment was inspected with Python 3.14.7. Create an isolated environment and install the development dependencies before running tests or the dashboard:
 
 ```bash
 python3 -m venv .venv
@@ -30,7 +30,7 @@ sensors = generate_sensor_data(n_samples=700, seed=42)
 print(sensors.head())
 ```
 
-Injected event names appear in `event_label`; `anomaly_label` is the known binary ground truth. The DataFrame metadata also identifies it as synthetic. To retrieve public data, use `src.data.fastf1_loader.list_events(...)`, `load_session(...)`, then `load_driver_telemetry(...)`. The first request can be slow; FastF1 caches fetched data under `.fastf1-cache/` by default. Set `F1_CACHE_DIR` or pass `cache_dir` to change that local path.
+Injected event names appear in `event_label`; `anomaly_label` is the known binary ground truth. The DataFrame metadata also identifies it as synthetic. To retrieve public data, use `src.data.fastf1_loader.list_events(...)`, `load_session(...)`, then `load_driver_telemetry(...)`. The first request can be slow. FastF1 caches fetched data in the system temporary directory by default (suitable for hosted ephemeral storage); set `F1_CACHE_DIR` or pass `cache_dir` to override it. Cache contents are disposable and are not committed.
 
 Run the reusable pipeline without Streamlit to validate the synthetic data, calculate sensor summaries, evaluate both anomaly methods, and export timestamped CSV, interactive HTML, and Markdown artifacts under `reports/`:
 
@@ -75,7 +75,11 @@ Screenshots can be added under `docs/screenshots/`.
 
 ## Dashboard
 
-Run `python -m streamlit run app.py` to open the overview and sidebar pages: F1 Telemetry Explorer, Telemetry Anomaly Analysis, Synthetic Sensor Lab, Data Quality, Model Evaluation, and Engineering Reports. Load the year, event, and session in F1 Telemetry Explorer first; select a driver, reference lap, and comparison laps to inspect raw traces, aligned differences, and an evidence-based engineering interpretation. The load button can be used again to reload; the UI reports the successful app load time but does not claim whether FastF1 used network or disk cache, because the loader cannot reliably identify that. Telemetry availability, sample count, channels, and data-quality checks are displayed. Real telemetry anomaly and quality CSVs plus an interpretation-labelled Markdown report can be downloaded from the analysis and Engineering Reports pages. Synthetic sensor summaries and labelled benchmark metrics remain a separate workflow. The real workflow does not substitute simulated data when session loading fails.
+Run `python -m streamlit run app.py` to open the overview and sidebar pages: F1 Telemetry Explorer, Telemetry Anomaly Analysis, Synthetic Sensor Lab, Data Quality, Model Evaluation, and Engineering Reports. Load the year, event, and session in F1 Telemetry Explorer first; select a driver, valid reference lap, and comparison laps to inspect raw traces, distance-aligned differences, lap conditions, and evidence-backed interpretations. The reload button reissues the loader call; FastF1 may use its cache. The UI labels call-completion time separately from cache/network origin, which remains unknown because the loader cannot reliably identify it. Telemetry availability, sample count, channels, lap quality, and alignment coverage are displayed. Real telemetry anomaly and comparison CSVs plus labelled Markdown reports are downloadable in memory. Synthetic sensor summaries and labelled benchmark metrics remain a separate workflow. The real workflow does not substitute simulated data when session loading fails.
+
+## Deployment and CI
+
+The Streamlit Community Cloud entry point is the repository-root `app.py`; installable application dependencies are in `requirements.txt`. No secrets or external services are required for the current public-data workflow. Community Cloud can retrieve FastF1 data only when its network and the upstream service are available; the app shows retrieval failures and keeps synthetic demonstrations separate. See [deployment and developer workflow](docs/deployment.md) for exact setup steps. GitHub Actions runs tests and quality checks; Streamlit Community Cloud's GitHub integration handles deployment after changes are merged into `main`.
 
 The principal question is how a driver's speed and RPM behaviour varies across comparable laps and which deviations merit further investigation. Public telemetry differences can reflect braking, acceleration, shifting, tyres, weather, traffic, setup, and track evolution. They do not establish internal power-unit health. FastF1 does not expose the full internal sensors a powertrain team may use, and the synthetic temperature, pressure, vibration, and RPM channels are simulated. See [Phase 8 validation and methodology](docs/phase-8-validation.md) for the distance alignment, limitations, actual cached-session results, and checks performed.
 
@@ -83,4 +87,4 @@ See [docs/real-telemetry-anomaly-analysis.md](docs/real-telemetry-anomaly-analys
 
 ## Current status
 
-Phase 8 adds same-event lap comparison, unlabelled anomaly sensitivity analysis, telemetry-level interpretation context, and retrieval diagnostics. The latest local validation used the cached 2026 Bahrain Grand Prix Race session through FastF1 3.8.3; no new uncached network retrieval was claimed. See [docs/phase-8-validation.md](docs/phase-8-validation.md) for measured findings. Automated tests use local fixtures/mocks and do not require live data access. Python 3.14.7 is the locally inspected runtime; the declared Python 3.11+ range has not been verified on every minor version.
+Phase 9 adds explicit lap eligibility reasons, nearest lap-midpoint weather context, per-channel alignment coverage, unit-aware anomaly explanations, and a reportable comparison case study. See [docs/phase-9-validation.md](docs/phase-9-validation.md) for actual cached-session observations, validation commands, and limitations. Automated tests use local fixtures/mocks and do not require live data access. Python 3.14.7 is the locally inspected runtime; CI targets the declared minimum Python 3.11.

@@ -57,6 +57,18 @@ deviation for review, not a causal feature attribution. Scores/rules mark
 potentially unusual telemetry that merits engineering review with driving and
 session context.
 
+The flagged-sample table distinguishes raw channels from the selected feature.
+A level feature such as `Throttle` is the current FastF1 channel sample; a
+derived feature such as `Throttle_change` is current throttle minus the
+immediately preceding cleaned row after distance sorting, in percentage points
+per provider sample. Missing values are not bridged. Its local reference is
+the preceding-window median in the same feature unit. The statistical score is a unitless robust-scale deviation;
+Isolation Forest's negative decision-function score is unitless and separate
+from the contextual feature deviation. FastF1 documents Speed in km/h, RPM in
+rpm, Throttle on a 0–100% scale (with 104 sometimes indicating unavailable or
+erroneous data), Brake as boolean applied/not-applied, and nGear as a gear
+number. Out-of-range throttle values are reported but retained, not clipped.
+
 Contiguous flagged samples form a segment; any clean or unscored sample breaks
 the segment. The anomaly page charts actual provider samples against their
 distance, marks potential anomalies on Speed and RPM traces, and can highlight
@@ -70,9 +82,10 @@ observed example.
 
 The page reports input ordering problems, removed invalid distances and
 duplicate distances, nonfinite channel counts, distance ordering after
-cleanup, and unscored samples. Short laps, empty laps, missing distance, and
-laps without usable varying channels produce actionable messages. Network and
-session retrieval messages remain on the explorer page.
+cleanup, unavailable lap-validity markers, and unscored samples. Short laps,
+empty laps, missing distance, and laps without usable varying channels produce
+actionable messages. Network and session retrieval messages remain on the
+explorer page.
 
 CSV and Markdown downloads are generated only when requested. They are
 downloaded through Streamlit and are not written into repository directories.

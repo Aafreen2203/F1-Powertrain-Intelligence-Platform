@@ -16,6 +16,30 @@ from src.validation.quality import validate_frame
 CORE_CHANNELS = ("Speed", "RPM", "Throttle", "Brake", "nGear")
 MIN_SAMPLES = 20
 MINIMUM_SIGNAL_SCALES = {"Speed": 1.0, "RPM": 50.0, "Throttle": 10.0, "nGear": 0.5}
+CHANNEL_UNITS = {
+    "Speed": "km/h",
+    "RPM": "rpm",
+    "Throttle": "%",
+    "Brake": "boolean applied/not applied",
+    "nGear": "gear number",
+}
+
+
+def _feature_description(feature: str) -> tuple[str, str, str, str]:
+    """Return raw channel, raw unit, feature unit, and exact feature definition."""
+    channel = feature.removesuffix("_change")
+    raw_unit = CHANNEL_UNITS.get(channel, "provider units")
+    if feature.endswith("_change"):
+        feature_unit = {
+            "Speed": "km/h per provider sample",
+            "RPM": "rpm per provider sample",
+            "Throttle": "percentage points per provider sample",
+        }.get(channel, f"{raw_unit} per provider sample")
+        definition = f"current {channel} minus immediately preceding cleaned row after distance sorting; missing values are not bridged"
+    else:
+        feature_unit = raw_unit
+        definition = f"current raw {channel} sample"
+    return channel, raw_unit, feature_unit, definition
 
 
 class TelemetryAnalysisError(ValueError):
@@ -112,6 +136,15 @@ def _prepare_samples(telemetry: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, o
         "distance_duplicate_count_after_cleanup": int(ordered["Distance"].duplicated().sum()),
         "rows_used": len(ordered),
     })
+    if "Throttle" in ordered:
+        throttle = _numeric_signal(ordered, "Throttle")
+        outside_documented_range = int(((throttle < 0) | (throttle > 100)).sum())
+        quality["throttle_outside_documented_0_100_percent_count"] = outside_documented_range
+        if outside_documented_range:
+            quality["warnings"] = [
+                *quality.get("warnings", []),
+                f"{outside_documented_range} Throttle samples are outside FastF1's documented 0–100% range; they were retained as provided and should be checked against pit/track status.",
+            ]
     # Returned signal values are coerced only in the private analysis frame;
     # source values remain in the sample table and are never imputed.
     for channel in channels:
@@ -241,27 +274,70 @@ def analyze_telemetry(
     samples["feature_or_channel"] = top_feature.to_numpy()
     selected_observed = np.full(len(samples), np.nan)
     selected_reference = np.full(len(samples), np.nan)
+    selected_context_score = np.full(len(samples), np.nan)
     for feature in contextual_scores.columns:
         selected = top_feature.eq(feature).to_numpy()
         selected_observed[selected] = features[feature].to_numpy()[selected]
         selected_reference[selected] = local_baselines[feature].to_numpy()[selected]
+        selected_context_score[selected] = contextual_scores[feature].to_numpy()[selected]
     samples["observed_feature_value"] = selected_observed
     samples["local_reference_value"] = selected_reference
+    samples["contextual_feature_score"] = selected_context_score
+    descriptions = {
+        feature: _feature_description(feature) for feature in contextual_scores.columns
+    }
+    samples["raw_channel"] = samples["feature_or_channel"].map(
+        lambda feature: descriptions.get(feature, ("", "", "", ""))[0]
+    )
+    samples["raw_channel_unit"] = samples["raw_channel"].map(CHANNEL_UNITS)
+    samples["raw_channel_value"] = [
+        pd.to_numeric(samples[channel], errors="coerce").iloc[index]
+        if channel in samples else np.nan
+        for index, channel in enumerate(samples["raw_channel"])
+    ]
+    samples["feature_unit"] = samples["feature_or_channel"].map(
+        lambda feature: descriptions.get(feature, ("", "", "", ""))[2]
+    )
+    samples["feature_definition"] = samples["feature_or_channel"].map(
+        lambda feature: descriptions.get(feature, ("", "", "", ""))[3]
+    )
     samples["configured_threshold"] = effective_threshold
     samples["configured_contamination"] = contamination
     if method == "Statistical baseline":
-        flagged_explanations = [
-            f"{feature} exceeded the causal robust-deviation threshold; inspect driving and session context."
-            if feature else "No contextual feature score was available for this sample."
-            for feature in top_feature
-        ]
+        flagged_explanations = []
+        for index, feature in enumerate(top_feature):
+            if not feature or not np.isfinite(selected_observed[index]) or not np.isfinite(selected_reference[index]):
+                flagged_explanations.append("No contextual feature score or preceding reference was available.")
+                continue
+            unit = descriptions[feature][2]
+            flagged_explanations.append(
+                f"{feature} value = {selected_observed[index]:.2f} {unit}; preceding-window median "
+                f"= {selected_reference[index]:.2f} {unit}; absolute robust deviation "
+                f"= {selected_context_score[index]:.2f} scale units, above threshold "
+                f"{threshold:.2f}. This is a statistical flag, not a causal diagnosis."
+            )
     else:
-        flagged_explanations = [
-            f"Isolation Forest marked this row as an outlier; {feature} had the largest contextual deviation."
-            if feature else "Isolation Forest marked a multichannel pattern as an outlier."
-            for feature in top_feature
-        ]
+        flagged_explanations = []
+        for index, feature in enumerate(top_feature):
+            detail = (
+                f"{feature} value = {selected_observed[index]:.2f} {descriptions[feature][2]}; "
+                f"preceding-window median = {selected_reference[index]:.2f} "
+                f"{descriptions[feature][2]}; contextual deviation = "
+                f"{selected_context_score[index]:.2f} scale units. "
+                if feature and np.isfinite(selected_observed[index]) and np.isfinite(selected_reference[index])
+                else ""
+            )
+            flagged_explanations.append(
+                f"Isolation Forest marked this row as an in-sample multichannel outlier "
+                f"(negative decision function {scores.iloc[index]:.4f}, unitless; contamination "
+                f"{contamination:.2f}). {detail}This is exploratory and not a causal diagnosis."
+            )
     samples["explanation"] = np.where(flags, flagged_explanations, "No score exceeded the selected rule.")
+    samples["anomaly_score_definition"] = (
+        "negative Isolation Forest decision function; unitless"
+        if method == "Isolation Forest"
+        else "maximum absolute contextual residual divided by robust local scale; unitless"
+    )
     samples["segment_id"] = pd.Series(pd.NA, index=samples.index, dtype="Int64")
     # A segment is a contiguous run in sample order; single clean samples split runs.
     starts = flags & ~flags.shift(fill_value=False)
@@ -286,8 +362,10 @@ def summarize_anomaly_segments(samples: pd.DataFrame) -> pd.DataFrame:
     flagged = samples.loc[samples["is_potential_anomaly"]].copy()
     columns = ["segment_id", "sample_count", "distance_start_m", "distance_end_m",
                "time_start", "time_end", "top_feature", "observed_min", "observed_max",
-               "local_reference_median", "configured_threshold", "configured_contamination",
-               "brake_context", "gear_context", "max_score", "explanation"]
+               "feature_unit", "feature_definition", "raw_channel", "raw_channel_unit",
+               "raw_channel_value_min", "raw_channel_value_max", "local_reference_median",
+               "configured_threshold", "configured_contamination", "brake_context",
+               "gear_context", "max_score", "explanation"]
     if flagged.empty:
         return pd.DataFrame(columns=columns)
     rows = []
@@ -295,6 +373,8 @@ def summarize_anomaly_segments(samples: pd.DataFrame) -> pd.DataFrame:
         top = part["feature_or_channel"].mode()
         feature = str(top.iloc[0]) if not top.empty else ""
         feature_rows = part[part["feature_or_channel"] == feature] if feature else part.iloc[0:0]
+        explanation_rows = feature_rows if not feature_rows.empty else part
+        explanation = explanation_rows.loc[explanation_rows["anomaly_score"].idxmax(), "explanation"]
         if "observed_feature_value" in feature_rows:
             observed = pd.to_numeric(feature_rows["observed_feature_value"], errors="coerce").dropna()
         else:
@@ -303,6 +383,10 @@ def summarize_anomaly_segments(samples: pd.DataFrame) -> pd.DataFrame:
         reference_values = (
             pd.to_numeric(feature_rows["local_reference_value"], errors="coerce").dropna()
             if "local_reference_value" in feature_rows else pd.Series(dtype=float)
+        )
+        raw_values = (
+            pd.to_numeric(feature_rows["raw_channel_value"], errors="coerce").dropna()
+            if "raw_channel_value" in feature_rows else pd.Series(dtype=float)
         )
         brake_context = (
             "brake active" if "Brake" in part and _numeric_signal(part, "Brake").fillna(0).gt(0.5).any()
@@ -319,13 +403,19 @@ def summarize_anomaly_segments(samples: pd.DataFrame) -> pd.DataFrame:
             "top_feature": feature,
             "observed_min": float(observed.min()) if len(observed) else float("nan"),
             "observed_max": float(observed.max()) if len(observed) else float("nan"),
+            "feature_unit": str(feature_rows["feature_unit"].iloc[0]) if len(feature_rows) and "feature_unit" in feature_rows else "",
+            "feature_definition": str(feature_rows["feature_definition"].iloc[0]) if len(feature_rows) and "feature_definition" in feature_rows else "",
+            "raw_channel": str(feature_rows["raw_channel"].iloc[0]) if len(feature_rows) and "raw_channel" in feature_rows else feature.removesuffix("_change"),
+            "raw_channel_unit": str(feature_rows["raw_channel_unit"].iloc[0]) if len(feature_rows) and "raw_channel_unit" in feature_rows else "",
+            "raw_channel_value_min": float(raw_values.min()) if len(raw_values) else float("nan"),
+            "raw_channel_value_max": float(raw_values.max()) if len(raw_values) else float("nan"),
             "local_reference_median": float(reference_values.median()) if len(reference_values) else float("nan"),
             "configured_threshold": float(part["configured_threshold"].iloc[0]) if "configured_threshold" in part else float("nan"),
             "configured_contamination": float(part["configured_contamination"].iloc[0]) if "configured_contamination" in part else float("nan"),
             "brake_context": brake_context,
             "gear_context": ", ".join(map(str, gears)) if gears else "unavailable",
             "max_score": float(part["anomaly_score"].max()),
-            "explanation": str(part["explanation"].iloc[0]),
+            "explanation": str(explanation),
         }
         rows.append(row)
     return pd.DataFrame(rows, columns=columns)

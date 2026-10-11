@@ -10,6 +10,84 @@ class LapComparisonError(ValueError):
 
 
 SIGNALS = ("Speed", "RPM", "Throttle", "Brake", "nGear")
+CONTEXT_COLUMNS = (
+    "LapNumber", "LapTime", "IsAccurate", "Deleted", "DeletedReason",
+    "PitInTime", "PitOutTime", "Stint", "Compound", "TyreLife", "TrackStatus",
+)
+VALIDITY_COLUMNS = ("LapTime", "IsAccurate", "Deleted", "PitInTime", "PitOutTime")
+
+
+def unavailable_lap_markers(laps: pd.DataFrame) -> list[str]:
+    """List FastF1 validity fields absent from this session's lap schema."""
+    return [column for column in VALIDITY_COLUMNS if column not in laps.columns]
+
+
+def _has_value(value: object) -> bool:
+    missing = pd.isna(value)
+    return not bool(missing) if isinstance(missing, (bool, np.bool_)) else True
+
+
+def _is_marked(value: object) -> bool:
+    if not _has_value(value):
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return bool(value)
+
+
+def classify_laps(laps: pd.DataFrame) -> pd.DataFrame:
+    """Classify lap rows using only explicit timing, validity, deletion and pit markers.
+
+    Missing optional metadata does not itself exclude a lap. The returned copy
+    retains the provider rows and adds reasoned eligibility fields.
+    """
+    if not isinstance(laps, pd.DataFrame):
+        raise TypeError("laps must be a pandas DataFrame")
+    result = laps.copy(deep=True)
+    eligible = []
+    reasons_by_row = []
+    for _, row in result.iterrows():
+        reasons = []
+        if "LapNumber" not in result or not _has_value(row.get("LapNumber")):
+            reasons.append("lap number unavailable")
+        if "LapTime" not in result or not _has_value(row.get("LapTime")):
+            reasons.append("timed lap unavailable (incomplete or unrecorded)")
+        if "IsAccurate" in result and _has_value(row.get("IsAccurate")) and not _is_marked(row["IsAccurate"]):
+            reasons.append("FastF1 marks lap as inaccurate")
+        if "Deleted" in result and _is_marked(row.get("Deleted")):
+            reason = row.get("DeletedReason")
+            suffix = f": {reason}" if _has_value(reason) else ""
+            reasons.append(f"FastF1 marks lap as deleted{suffix}")
+        for column, label in (("PitInTime", "pit-in"), ("PitOutTime", "pit-out")):
+            if column in result and _has_value(row.get(column)):
+                reasons.append(f"lap has {label} marker")
+        reasons_by_row.append("; ".join(reasons))
+        eligible.append(not reasons)
+    result["comparison_eligible"] = eligible
+    result["exclusion_reasons"] = reasons_by_row
+    return result
+
+
+def lap_weather_at_midpoint(weather: pd.DataFrame, lap: pd.Series) -> pd.Series | None:
+    """Return the nearest available session-weather sample to a lap midpoint."""
+    if not isinstance(weather, pd.DataFrame) or weather.empty or "Time" not in weather:
+        return None
+    start = pd.to_timedelta(lap.get("LapStartTime"), errors="coerce")
+    duration = pd.to_timedelta(lap.get("LapTime"), errors="coerce")
+    if pd.isna(start) or pd.isna(duration):
+        return None
+    sample_times = pd.to_timedelta(weather["Time"], errors="coerce")
+    valid = sample_times.notna()
+    if not valid.any():
+        return None
+    target = start + duration / 2
+    valid_positions = np.flatnonzero(valid.to_numpy())
+    offsets = (sample_times.iloc[valid_positions] - target).abs()
+    nearest_index = int(np.argmin(offsets.to_numpy()))
+    selected_position = int(valid_positions[nearest_index])
+    selected = weather.iloc[selected_position].copy()
+    selected["lap_midpoint_offset_seconds"] = float(offsets.iloc[nearest_index].total_seconds())
+    return selected
 
 
 def _interpolate_continuous(source: pd.DataFrame, channel: str, grid: np.ndarray) -> np.ndarray:
@@ -95,20 +173,25 @@ def align_laps_by_distance(
 
 
 def lap_difference_summary(aligned: pd.DataFrame) -> pd.DataFrame:
-    """Summarize largest absolute differences and retain their circuit locations."""
+    """Summarize largest absolute differences and retain alignment coverage."""
     rows = []
     for channel in ("Speed", "RPM", "Throttle"):
         delta_col = f"delta_{channel}"
         if delta_col not in aligned or aligned[delta_col].notna().sum() == 0:
             continue
         index = aligned[delta_col].abs().idxmax()
+        compared = aligned[delta_col].notna()
+        valid_count = int(compared.sum())
         rows.append({
             "channel": channel,
             "distance_m": float(aligned.loc[index, "Distance"]),
             "reference_value": float(aligned.loc[index, f"reference_{channel}"]),
             "comparison_value": float(aligned.loc[index, f"comparison_{channel}"]),
             "delta_comparison_minus_reference": float(aligned.loc[index, delta_col]),
-            "mean_absolute_difference": float(aligned[delta_col].abs().mean()),
+            "mean_absolute_difference": float(aligned.loc[compared, delta_col].abs().mean()),
+            "valid_aligned_samples": valid_count,
+            "aligned_grid_samples": len(aligned),
+            "coverage_fraction": valid_count / len(aligned) if len(aligned) else 0.0,
             "reference_time_s": float(aligned.loc[index, "reference_time_s"]) if "reference_time_s" in aligned else np.nan,
             "comparison_time_s": float(aligned.loc[index, "comparison_time_s"]) if "comparison_time_s" in aligned else np.nan,
         })

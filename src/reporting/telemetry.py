@@ -16,6 +16,7 @@ def telemetry_export_frames(
     *,
     metadata: dict[str, Any],
     parameters: dict[str, Any],
+    retrieval: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     """Build downloadable sample, quality, and Markdown report artifacts.
 
@@ -33,6 +34,8 @@ def telemetry_export_frames(
         "threshold": parameters.get("threshold"),
         "contamination": parameters.get("contamination"),
         "context_window_samples": parameters.get("window"),
+        "session_load_completed_at_utc": (retrieval or {}).get("load_completed_at_utc"),
+        "cache_network_origin": (retrieval or {}).get("cache_origin", "unknown"),
     }
     sample_frame = result.samples.copy()
     for column, value in reversed(list(identifiers.items())):
@@ -58,6 +61,8 @@ def telemetry_export_frames(
         f"- Available channels: {', '.join(result.available_channels)}",
         f"- Channel availability: {json.dumps(result.quality.get('channel_availability', {}), sort_keys=True)}",
         f"- Detection note: {result.quality['method_note']}",
+        f"- Session load completed UTC: {(retrieval or {}).get('load_completed_at_utc', 'unavailable')}",
+        f"- Cache/network origin: {(retrieval or {}).get('cache_origin', 'unknown')}",
         "",
         "## Data quality and findings",
         f"- Usable samples: {result.quality['rows_used']}",
@@ -70,13 +75,21 @@ def telemetry_export_frames(
         lines.append("No samples met the selected rule on this lap.")
     else:
         lines.extend([
-            "| Segment | Samples | Distance range (m) | Main feature | Maximum score |",
-            "| ---: | ---: | ---: | --- | ---: |",
+            "| Segment | Samples | Distance range (m) | Feature definition | Feature range (unit) | Raw channel range (unit) | Local feature median | Maximum model score | Rule |",
+            "| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |",
         ])
         for row in segments.itertuples(index=False):
+            rule = (
+                f"robust deviation > {row.configured_threshold:.2f} scale units"
+                if result.method == "Statistical baseline"
+                else f"Isolation Forest contamination {row.configured_contamination:.2f}"
+            )
             lines.append(
                 f"| {row.segment_id} | {row.sample_count} | {row.distance_start_m:.2f}–"
-                f"{row.distance_end_m:.2f} | {row.top_feature} | {row.max_score:.3f} |"
+                f"{row.distance_end_m:.2f} | {row.feature_definition} | "
+                f"{row.observed_min:.2f}–{row.observed_max:.2f} {row.feature_unit} | "
+                f"{row.raw_channel}: {row.raw_channel_value_min:.2f}–{row.raw_channel_value_max:.2f} {row.raw_channel_unit} | "
+                f"{row.local_reference_median:.2f} {row.feature_unit} | {row.max_score:.3f} | {rule} |"
             )
     lines.extend([
         "",

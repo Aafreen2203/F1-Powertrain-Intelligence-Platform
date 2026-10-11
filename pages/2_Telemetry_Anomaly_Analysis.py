@@ -1,7 +1,13 @@
 """Exploratory anomaly screening for the currently loaded public FastF1 lap."""
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from src.analytics.lap_comparison import (
+    CONTEXT_COLUMNS,
+    classify_laps,
+    unavailable_lap_markers,
+)
 from src.analytics.telemetry_anomaly import (
     TelemetryAnalysisError,
     sensitivity_analysis,
@@ -34,18 +40,20 @@ if not drivers:
 
 driver = st.selectbox("Driver", drivers, key="anomaly_driver")
 laps = session.laps[session.laps["Driver"].astype(str) == driver]
-eligible = laps.dropna(subset=["LapTime"]) if "LapTime" in laps else laps.iloc[0:0]
-if "IsAccurate" in eligible:
-    eligible = eligible[eligible["IsAccurate"].fillna(False)]
-for pit_col in ("PitInTime", "PitOutTime"):
-    if pit_col in eligible:
-        eligible = eligible[eligible[pit_col].isna()]
-if eligible.empty and "LapTime" in laps:
-    eligible = laps.dropna(subset=["LapTime"])
-    st.warning("No accurate non-pit laps are marked by FastF1; options use timed laps only.")
+eligibility = classify_laps(laps)
+unavailable_markers = unavailable_lap_markers(laps)
+if unavailable_markers:
+    st.warning(f"FastF1 did not provide these lap validity markers: {', '.join(unavailable_markers)}. The app cannot filter on missing markers; inspect available lap metadata before interpreting flags.")
+eligible = eligibility[eligibility["comparison_eligible"]]
+st.caption(f"{len(eligible)} of {len(laps)} lap records meet available timing, accuracy, deletion, and pit-marker checks.")
+excluded = eligibility[~eligibility["comparison_eligible"]]
+if not excluded.empty:
+    with st.expander(f"Excluded laps and reasons ({len(excluded)})"):
+        shown = [column for column in (*CONTEXT_COLUMNS, "exclusion_reasons") if column in excluded]
+        st.dataframe(excluded[shown], width="stretch", hide_index=True)
 lap_options = sorted(eligible["LapNumber"].dropna().astype(int).unique()) if "LapNumber" in eligible else []
 if not lap_options:
-    st.warning("No timed lap is available for this driver.")
+    st.warning("No lap passed the available timing/validity checks. Select another driver or session; unsuitable laps are listed above.")
     st.stop()
 lap_number = st.selectbox("Lap", lap_options, key="anomaly_lap")
 
@@ -77,24 +85,38 @@ method_parameters = {
     "contamination": contamination if method == "Isolation Forest" else None,
     "window": window,
 }
+retrieval = st.session_state.get("f1_retrieval_status", {})
+lap_metadata_row = eligible.loc[eligible["LapNumber"] == lap_number].iloc[0]
+metadata["lap_conditions"] = {
+    column: lap_metadata_row.get(column)
+    for column in ("IsAccurate", "Compound", "TyreLife", "Stint", "TrackStatus")
+    if column in eligible
+}
 st.session_state["real_telemetry_anomaly"] = {
     "result": result, "metadata": metadata,
     "parameters": method_parameters,
+    "retrieval": retrieval,
 }
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Usable samples", result.quality["rows_used"])
 c2.metric("Potential anomaly samples", result.quality["potential_anomaly_sample_count"])
 c3.metric("Contiguous segments", result.quality["potential_anomaly_segment_count"])
+st.caption(f"Load completed: {retrieval.get('load_completed_at_utc', 'unavailable')} UTC · cache/network origin: {retrieval.get('cache_origin', 'unknown')} · this timestamp identifies completion, not source provenance.")
 st.caption(f"Available channels: {', '.join(result.available_channels)} · Brake and nGear, when present, supply context and are not scored directly.")
 st.caption(str(result.quality["method_note"]))
 st.info("A sample outlier is a mathematical result, not an engineering concern by itself. Driver inputs, braking, shifts, cornering, tyres, weather, traffic, session type, and data issues may explain unusual public telemetry. FastF1 has no verified anomaly ground truth here; no accuracy, precision, recall, F1, false-positive rate, or failure prediction is available.")
-st.json({key: value for key, value in result.quality.items()
-         if key in {"source_ordering_violations", "duplicate_distance_samples_removed",
-                    "invalid_distance_samples_removed", "nonfinite_channel_values",
-                    "channel_availability", "samples_without_usable_channels_removed",
-                    "distance_monotonic_after_cleanup", "distance_duplicate_count_after_cleanup",
-                    "unscored_samples", "warnings"}})
+quality_checks = pd.DataFrame([
+    {"Check": "Source ordering violations", "Result": result.quality.get("source_ordering_violations", "unavailable")},
+    {"Check": "Duplicate distance samples removed", "Result": result.quality.get("duplicate_distance_samples_removed", "unavailable")},
+    {"Check": "Invalid distance samples removed", "Result": result.quality.get("invalid_distance_samples_removed", "unavailable")},
+    {"Check": "Samples without usable channels removed", "Result": result.quality.get("samples_without_usable_channels_removed", "unavailable")},
+    {"Check": "Unscored samples", "Result": result.quality.get("unscored_samples", "unavailable")},
+    {"Check": "Distance monotonic after cleanup", "Result": result.quality.get("distance_monotonic_after_cleanup", "unavailable")},
+    {"Check": "Warnings", "Result": "; ".join(result.quality.get("warnings", [])) or "None"},
+])
+st.subheader("Data-quality summary")
+st.dataframe(quality_checks.astype({"Result": str}), hide_index=True, width="stretch")
 
 segments = summarize_anomaly_segments(result.samples)
 with st.expander("Sensitivity analysis · not accuracy validation", expanded=False):
@@ -118,16 +140,19 @@ else:
     context = st.slider("Context either side (metres)", 25, 1000, 250, 25)
     distance_low = max(float(result.samples["Distance"].min()), selected["distance_start_m"] - context)
     distance_high = min(float(result.samples["Distance"].max()), selected["distance_end_m"] + context)
-    rule = (
-        f"threshold {selected['configured_threshold']:.2f}"
-        if method == "Statistical baseline"
-        else f"Isolation Forest contamination {selected['configured_contamination']:.2f}"
-    )
-    st.caption(f"Segment {selected_segment}: {selected['top_feature']} reached score {selected['max_score']:.2f} ({rule}). "
-               f"Observed feature values range from {selected['observed_min']:.2f} to {selected['observed_max']:.2f}, "
-               f"with local preceding-window median {selected['local_reference_median']:.2f}; "
-               f"context: {selected['brake_context']}, gear samples {selected['gear_context']}. "
-               "Review the original trace and race context; this is not a fault diagnosis.")
+    st.caption(f"Selected segment {selected_segment}; review its matching channel chart below. {selected['feature_definition']} Raw source: {selected['raw_channel']} ({selected['raw_channel_unit']}).")
+    surrounding = result.samples[
+        result.samples["Distance"].between(distance_low, distance_high)
+    ].copy()
+    surrounding_columns = [column for column in (
+        "Distance", "Date", "Time", "Speed", "RPM", "Throttle", "Brake", "nGear",
+        "feature_or_channel", "observed_feature_value", "feature_unit",
+        "local_reference_value", "contextual_feature_score", "anomaly_score",
+        "is_potential_anomaly", "explanation",
+    ) if column in surrounding]
+    with st.expander(f"Provider and scored samples around segment {selected_segment}"):
+        st.caption("Each row is a cleaned FastF1 provider sample. The table keeps original channels beside the transformed feature, its preceding-window reference, and the unitless score.")
+        st.dataframe(surrounding[surrounding_columns], width="stretch", hide_index=True)
 
 st.subheader("Selected lap telemetry")
 chart_channels = [channel for channel in ("Speed", "RPM", "Throttle", "Brake", "nGear")
@@ -140,30 +165,73 @@ for channel in chart_channels:
     fig.add_trace(go.Scatter(x=result.samples["Distance"], y=values, mode="lines",
                              name=channel, connectgaps=False))
     flagged = result.samples[result.samples["is_potential_anomaly"]]
-    if channel in {"Speed", "RPM"} and not flagged.empty:
-        fig.add_trace(go.Scatter(x=flagged["Distance"], y=flagged[channel], mode="markers",
+    channel_flags = flagged[flagged["raw_channel"].eq(channel)] if not flagged.empty and "raw_channel" in flagged else flagged.iloc[0:0]
+    if not channel_flags.empty:
+        fig.add_trace(go.Scatter(x=channel_flags["Distance"], y=channel_flags[channel], mode="markers",
                                  name="Potential anomaly", marker={"color": "red", "size": 8},
-                                 customdata=flagged[["anomaly_score", "explanation"]],
+                                 customdata=channel_flags[["anomaly_score", "explanation"]],
                                  hovertemplate="Distance %{x:.1f} m<br>Value %{y}<br>Score %{customdata[0]:.2f}<br>%{customdata[1]}<extra></extra>"))
     if not segments.empty:
         fig.add_vrect(x0=distance_low, x1=distance_high, fillcolor="orange", opacity=0.12,
                       line_width=0, layer="below")
+    unit = {"Speed": "km/h", "RPM": "rpm", "Throttle": "%", "Brake": "boolean applied", "nGear": "gear number"}.get(channel, channel)
     fig.update_layout(title=f"{channel} by distance · {driver} lap {lap_number}",
-                      xaxis_title="Distance (m)", yaxis_title=channel)
+                      xaxis_title="Distance (m)", yaxis_title=unit)
     st.plotly_chart(fig, width="stretch")
+    if channel_flags.empty:
+        observed = values.dropna()
+        if channel == "Brake":
+            transitions = int(observed.ne(observed.shift()).sum() - (1 if len(observed) else 0))
+            detail = f"the plotted boolean channel has {transitions} state transitions"
+        elif channel == "nGear":
+            transitions = int(observed.ne(observed.shift()).sum() - (1 if len(observed) else 0))
+            detail = f"the plotted gear channel spans {observed.min():.0f}–{observed.max():.0f} with {transitions} shifts"
+        else:
+            detail = f"the plotted values span {observed.min():.2f}–{observed.max():.2f} {unit}"
+        st.info(f"**Engineering Review · {channel}:** no flagged feature maps to this raw channel; {detail}. Driver braking and gear shifts are expected inputs, and an overall outlier does not imply a channel fault.")
+    else:
+        top = channel_flags.loc[channel_flags["anomaly_score"].idxmax()]
+        if "Date" in top and pd.notna(top["Date"]):
+            timestamp = f" at {top['Date']}"
+        elif "Time" in top and pd.notna(top["Time"]):
+            timestamp = f" at {top['Time']}"
+        else:
+            timestamp = ""
+        reference = top.get("local_reference_value")
+        reference_text = f"{reference:.2f} {top['feature_unit']}" if pd.notna(reference) else "unavailable"
+        rule = (f"robust-deviation threshold {top['configured_threshold']:.2f} scale units"
+                if method == "Statistical baseline"
+                else f"negative decision-function boundary > 0; contamination setting {top['configured_contamination']:.2f}")
+        context_values = [f"Speed {top.get('Speed', float('nan')):.1f} km/h",
+                          f"RPM {top.get('RPM', float('nan')):.0f}",
+                          f"Throttle {top.get('Throttle', float('nan')):.1f}%",
+                          f"Brake {top.get('Brake', 'unavailable')}",
+                          f"gear {top.get('nGear', 'unavailable')}"]
+        st.markdown(
+            f"**Engineering Review · {channel}**  \n"
+            f"**Observation:** {top['feature_or_channel']} flag at {top['Distance']:.1f} m{timestamp}.  \n"
+            f"**Evidence:** observed feature {top['observed_feature_value']:.2f} {top['feature_unit']} (raw {top['raw_channel_value']:.2f} {top['raw_channel_unit']}); preceding local reference {reference_text}; score {top['anomaly_score']:.3f} ({top['anomaly_score_definition']}); rule: {rule}.  \n"
+            f"**Context:** {', '.join(context_values)}. This statistical screening result is not a confirmed fault.  \n"
+            f"**Next investigation:** inspect adjacent provider samples and compare another valid lap under similar conditions."
+        )
 
 st.subheader("Flagged samples")
 flagged = result.samples[result.samples["is_potential_anomaly"]].copy()
 if flagged.empty:
     st.info("There are no flagged samples to list for the current method and settings.")
 else:
+    st.caption("The explanation columns distinguish raw channel values, derived feature values and units, the preceding-window feature median, a unitless robust-scale deviation, and the selected model's score/rule. A feature association is descriptive, not causal.")
     preferred = [c for c in ["Distance", "Date", "Time", "Speed", "RPM", "Throttle", "Brake", "nGear",
-                             "feature_or_channel", "observed_feature_value", "local_reference_value",
-                             "anomaly_score", "segment_id", "explanation"] if c in flagged]
+                             "feature_or_channel", "feature_definition", "feature_unit", "raw_channel",
+                             "raw_channel_value", "raw_channel_unit", "observed_feature_value",
+                             "local_reference_value", "contextual_feature_score", "anomaly_score",
+                             "anomaly_score_definition", "configured_threshold", "configured_contamination",
+                             "segment_id", "explanation"] if c in flagged]
     st.dataframe(flagged[preferred], width="stretch", hide_index=True)
 
 sample_export, quality_export, report = telemetry_export_frames(
     result, metadata=metadata, parameters=method_parameters,
+    retrieval=retrieval,
 )
 st.download_button("Download telemetry anomaly samples CSV", sample_export.to_csv(index=False),
                    file_name=f"fastf1_{season}_{driver}_lap{lap_number}_anomalies.csv", mime="text/csv")
@@ -171,3 +239,13 @@ st.download_button("Download telemetry quality CSV", quality_export.to_csv(index
                    file_name=f"fastf1_{season}_{driver}_lap{lap_number}_quality.csv", mime="text/csv")
 st.download_button("Download concise engineering report", report,
                    file_name=f"fastf1_{season}_{driver}_lap{lap_number}_report.md", mime="text/markdown")
+
+with st.expander("Technical Diagnostics", expanded=False):
+    st.write("Cache/network origin is unknown; completion timestamps do not establish a cache hit or fresh request.")
+    retrieval_diagnostics = dict(retrieval)
+    if isinstance(retrieval_diagnostics.get("selected_lap"), dict):
+        retrieval_diagnostics["selected_lap"] = {
+            key: value for key, value in retrieval_diagnostics["selected_lap"].items()
+            if key != "quality"
+        }
+    st.json({"retrieval": retrieval_diagnostics, "model_parameters": method_parameters, "data_quality": result.quality})

@@ -124,6 +124,35 @@ def test_brake_context_does_not_score_a_braking_speed_transient_as_anomaly():
     assert "Brake" in result.quality["context_channels"]
 
 
+def test_throttle_explanation_uses_raw_percent_and_matching_local_feature_value():
+    telemetry = make_telemetry()
+    telemetry["Speed"] = 180.0
+    telemetry["RPM"] = 9000.0
+    telemetry["Throttle"] = 100.0
+    telemetry.loc[50, "Throttle"] = 1.87
+    result = analyze_telemetry(telemetry, threshold=6, window=15)
+    row = result.samples.loc[50]
+    assert row["is_potential_anomaly"]
+    assert row["feature_or_channel"] == "Throttle"
+    assert row["raw_channel"] == "Throttle"
+    assert row["feature_definition"] == "current raw Throttle sample"
+    assert row["raw_channel_value"] == pytest.approx(1.87)
+    assert row["observed_feature_value"] == pytest.approx(1.87)
+    assert row["local_reference_value"] == pytest.approx(100.0)
+    assert row["feature_unit"] == "%"
+    assert "1.87 %" in row["explanation"] and "100.00 %" in row["explanation"]
+    assert "robust deviation" in row["explanation"]
+
+
+def test_fastf1_throttle_values_above_documented_range_are_reported_not_clipped():
+    telemetry = make_telemetry()
+    telemetry.loc[50, "Throttle"] = 104
+    result = analyze_telemetry(telemetry)
+    assert result.samples.loc[50, "Throttle"] == 104
+    assert result.quality["throttle_outside_documented_0_100_percent_count"] == 1
+    assert any("outside FastF1's documented 0–100% range" in warning for warning in result.quality["warnings"])
+
+
 def test_segment_summary_keeps_clean_sample_gaps_separate():
     samples = pd.DataFrame({
         "Distance": [0, 1, 2, 3, 4],
@@ -138,18 +167,52 @@ def test_segment_summary_keeps_clean_sample_gaps_separate():
     assert segments["distance_start_m"].tolist() == [1.0, 4.0]
 
 
+def test_segment_explanation_matches_its_aggregated_top_feature():
+    samples = pd.DataFrame({
+        "Distance": [100, 101, 102],
+        "is_potential_anomaly": [True, True, True],
+        "segment_id": pd.Series([1, 1, 1], dtype="Int64"),
+        "feature_or_channel": ["RPM", "Throttle", "Throttle"],
+        "feature_unit": ["rpm", "%", "%"],
+        "feature_definition": ["raw RPM", "raw Throttle", "raw Throttle"],
+        "raw_channel": ["RPM", "Throttle", "Throttle"],
+        "raw_channel_unit": ["rpm", "%", "%"],
+        "raw_channel_value": [9000, 4, 5],
+        "observed_feature_value": [9000, 4, 5],
+        "local_reference_value": [10000, 100, 100],
+        "anomaly_score": [9, 7, 8],
+        "configured_threshold": [6, 6, 6],
+        "configured_contamination": [0.03, 0.03, 0.03],
+        "Brake": [False, False, False],
+        "nGear": [5, 5, 5],
+        "explanation": ["RPM explanation", "Throttle explanation 1", "Throttle explanation 2"],
+    })
+
+    segment = summarize_anomaly_segments(samples).iloc[0]
+
+    assert segment["top_feature"] == "Throttle"
+    assert "Throttle explanation" in segment["explanation"]
+    assert "RPM explanation" not in segment["explanation"]
+    assert segment["feature_unit"] == "%"
+    assert segment["raw_channel_value_min"] == 4
+    assert segment["raw_channel_value_max"] == 5
+
+
 def test_exports_include_public_source_session_and_limitation_labels():
     result = analyze_telemetry(make_telemetry())
     sample_export, quality_export, report = telemetry_export_frames(
         result,
         metadata={"year": 2026, "event": "Example GP", "session": "R", "driver": "1", "lap": 2},
         parameters={"method": "Statistical baseline", "threshold": 6, "contamination": 0.03, "window": 31},
+        retrieval={"load_completed_at_utc": "2026-10-10T12:00:00Z", "cache_origin": "unknown"},
     )
     assert set(sample_export["data_source"]) == {PUBLIC_SOURCE}
     assert sample_export["event"].iat[0] == "Example GP"
     assert "potential anomaly" in report.lower()
     assert "precision" in report.lower()
     assert set(quality_export["data_source"]) == {PUBLIC_SOURCE}
+    assert set(sample_export["cache_network_origin"]) == {"unknown"}
+    assert "Cache/network origin: unknown" in report
 
 
 def test_sensitivity_analysis_compares_methods_and_settings_without_labels():
