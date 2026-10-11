@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from fastf1.exceptions import DataNotLoadedError
 from streamlit.testing.v1 import AppTest
 
 import src.data.fastf1_loader as fastf1_loader
@@ -32,6 +33,26 @@ class FakeSession:
         self.laps = laps
 
 
+class UnloadedFakeSession:
+    def __init__(self, laps, *, fail=False):
+        self._laps = None
+        self.pending_laps = laps
+        self.load_calls = 0
+        self.fail = fail
+
+    @property
+    def laps(self):
+        if self._laps is None:
+            raise DataNotLoadedError("Laps have not been loaded")
+        return self._laps
+
+    def load(self, **_kwargs):
+        self.load_calls += 1
+        if self.fail:
+            raise RuntimeError("simulated FastF1 lap load failure")
+        self._laps = self.pending_laps
+
+
 def test_explorer_load_flow_uses_existing_fastf1_loader_functions(monkeypatch):
     laps = pd.DataFrame({
         "Driver": ["1"], "LapNumber": [4], "LapTime": pd.to_timedelta([90], unit="s"),
@@ -49,6 +70,41 @@ def test_explorer_load_flow_uses_existing_fastf1_loader_functions(monkeypatch):
     assert not at.exception
     assert at.session_state["f1_loaded_key"] == (2024, "Example GP", "FP1")
     assert at.session_state["f1_loaded_session"] is fake
+
+
+def test_explorer_recovers_when_session_lap_property_is_initially_unloaded(monkeypatch):
+    laps = pd.DataFrame({
+        "Driver": ["1"], "LapNumber": [4], "LapTime": pd.to_timedelta([90], unit="s"),
+        "IsAccurate": [True], "PitInTime": [pd.NaT], "PitOutTime": [pd.NaT],
+    })
+    session = UnloadedFakeSession(laps)
+    monkeypatch.setattr(fastf1_loader, "list_events", lambda _season: pd.DataFrame({"EventName": ["Example GP"]}))
+    monkeypatch.setattr(fastf1_loader, "load_session", lambda *_args: session)
+    monkeypatch.setattr(fastf1_loader, "load_driver_telemetry", lambda *_args, **_kwargs: telemetry_frame())
+
+    at = AppTest.from_file(str(ROOT / "pages/1_F1_Telemetry_Explorer.py")).run()
+    at.button[0].click().run()
+    at.button[1].click().run()
+
+    assert not at.exception
+    assert session.load_calls == 1
+    assert at.session_state["f1_loaded_session"] is session
+
+
+def test_explorer_shows_retry_message_when_lap_loading_fails(monkeypatch):
+    laps = pd.DataFrame({
+        "Driver": ["1"], "LapNumber": [4], "LapTime": pd.to_timedelta([90], unit="s"),
+    })
+    session = UnloadedFakeSession(laps, fail=True)
+    monkeypatch.setattr(fastf1_loader, "list_events", lambda _season: pd.DataFrame({"EventName": ["Example GP"]}))
+    monkeypatch.setattr(fastf1_loader, "load_session", lambda *_args: session)
+    at = AppTest.from_file(str(ROOT / "pages/1_F1_Telemetry_Explorer.py")).run()
+    at.button[0].click().run()
+    at.button[1].click().run()
+
+    assert not at.exception
+    assert any("FastF1 lap data is unavailable" in item.value for item in at.error)
+    assert any("Press **Load / reload selected session** to retry" in item.value for item in at.info)
 
 
 def test_explorer_handles_unavailable_schedule_without_traceback(monkeypatch):
@@ -162,6 +218,37 @@ def test_telemetry_page_consumes_loaded_session_and_exposes_exports(monkeypatch)
     assert not at.exception
     assert len(at.get("dataframe")) >= 1
     assert at.session_state["real_telemetry_anomaly"]["metadata"]["lap"] == 4
+
+
+def test_anomaly_page_recovers_when_session_lap_property_is_initially_unloaded(monkeypatch):
+    laps = pd.DataFrame({
+        "Driver": ["1"], "LapNumber": [4], "LapTime": pd.to_timedelta([90], unit="s"),
+        "IsAccurate": [True], "PitInTime": [pd.NaT], "PitOutTime": [pd.NaT],
+    })
+    session = UnloadedFakeSession(laps)
+    monkeypatch.setattr(fastf1_loader, "load_driver_telemetry", lambda *_args, **_kwargs: telemetry_frame())
+    at = AppTest.from_file(str(ROOT / "pages/2_Telemetry_Anomaly_Analysis.py"))
+    at.session_state["f1_loaded_session"] = session
+    at.session_state["f1_loaded_key"] = (2026, "Example GP", "R")
+
+    at.run()
+
+    assert not at.exception
+    assert session.load_calls == 1
+    assert at.session_state["real_telemetry_anomaly"]["metadata"]["lap"] == 4
+
+
+def test_anomaly_page_shows_recovery_message_when_lap_loading_fails():
+    session = UnloadedFakeSession(pd.DataFrame(), fail=True)
+    at = AppTest.from_file(str(ROOT / "pages/2_Telemetry_Anomaly_Analysis.py"))
+    at.session_state["f1_loaded_session"] = session
+    at.session_state["f1_loaded_key"] = (2026, "Example GP", "R")
+
+    at.run()
+
+    assert not at.exception
+    assert any("FastF1 lap data is unavailable" in item.value for item in at.error)
+    assert any("Return to F1 Telemetry Explorer to retry" in item.value for item in at.info)
 
 
 def test_telemetry_page_empty_state_does_not_make_network_requests():

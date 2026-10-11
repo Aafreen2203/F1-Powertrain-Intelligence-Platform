@@ -18,6 +18,7 @@ from src.analytics.lap_comparison import (
 from src.analytics.telemetry import lap_kpis, telemetry_profile
 from src.data.fastf1_loader import (
     FastF1DataError,
+    get_session_laps,
     list_drivers,
     list_events,
     load_driver_telemetry,
@@ -88,7 +89,13 @@ if session is None:
     st.info("Load an event list, choose an event and session, then request public data. No network request occurs until you press a load button. Use the load button again to explicitly re-request; FastF1 may still serve its disk cache.")
 else:
     retrieval = st.session_state.get("f1_retrieval_status", {"state": "loaded; retrieval details unavailable"})
-    drivers = list_drivers(session)
+    try:
+        drivers = list_drivers(session)
+        session_laps = get_session_laps(session)
+    except FastF1DataError as exc:
+        st.error(f"FastF1 lap data is unavailable: {exc}")
+        st.info("Press **Load / reload selected session** to retry, or select a different session.")
+        st.stop()
     if not drivers:
         st.warning("The session loaded, but FastF1 returned no driver lap records.")
     else:
@@ -96,7 +103,7 @@ else:
         prior_comparison = st.session_state.get("f1_lap_comparison")
         if prior_comparison and prior_comparison["metadata"].get("driver") != driver:
             st.session_state.pop("f1_lap_comparison", None)
-        laps = session.laps[session.laps["Driver"].astype(str) == driver]
+        laps = session_laps[session_laps["Driver"].astype(str) == driver]
         eligibility = classify_laps(laps)
         unavailable_markers = unavailable_lap_markers(laps)
         if unavailable_markers:
@@ -139,7 +146,7 @@ else:
             try:
                 reference = load_driver_telemetry(session, driver, lap_number=int(reference_lap))
                 st.session_state["f1_telemetry"] = reference
-                st.session_state["f1_laps"] = session.laps.copy()
+                st.session_state["f1_laps"] = session_laps.copy()
                 expected_scoring = {"Speed", "RPM", "Throttle"}
                 available_scoring = expected_scoring.intersection(reference.columns)
                 telemetry_state = (

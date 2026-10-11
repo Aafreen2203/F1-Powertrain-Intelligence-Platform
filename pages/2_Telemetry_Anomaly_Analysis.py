@@ -14,7 +14,12 @@ from src.analytics.telemetry_anomaly import (
     summarize_anomaly_segments,
 )
 from src.dashboard_data import cached_telemetry_anomaly
-from src.data.fastf1_loader import FastF1DataError, list_drivers, load_driver_telemetry
+from src.data.fastf1_loader import (
+    FastF1DataError,
+    get_session_laps,
+    list_drivers,
+    load_driver_telemetry,
+)
 from src.reporting.telemetry import telemetry_export_frames
 
 st.title("Telemetry Anomaly Analysis")
@@ -33,13 +38,19 @@ if session is None or session_key is None:
 
 season, event_name, session_name = session_key
 st.markdown(f"**Loaded session:** {season} {event_name} · {session_name}")
-drivers = list_drivers(session)
+try:
+    drivers = list_drivers(session)
+    session_laps = get_session_laps(session)
+except FastF1DataError as exc:
+    st.error(f"FastF1 lap data is unavailable: {exc}")
+    st.info("Return to F1 Telemetry Explorer to retry loading this session, or select a different session.")
+    st.stop()
 if not drivers:
     st.warning("FastF1 returned no driver lap records for this session.")
     st.stop()
 
 driver = st.selectbox("Driver", drivers, key="anomaly_driver")
-laps = session.laps[session.laps["Driver"].astype(str) == driver]
+laps = session_laps[session_laps["Driver"].astype(str) == driver]
 eligibility = classify_laps(laps)
 unavailable_markers = unavailable_lap_markers(laps)
 if unavailable_markers:

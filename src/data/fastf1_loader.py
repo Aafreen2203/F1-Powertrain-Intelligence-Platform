@@ -63,6 +63,10 @@ def load_session(
         import fastf1
         session = fastf1.get_session(int(season), event, str(session_name))
         session.load(telemetry=load_telemetry, laps=True, weather=True, messages=False)
+        # FastF1 can return a Session object even when lap data was not loaded
+        # (for example, when the selected session/API is unsupported). Verify
+        # the property before publishing the session to callers or session state.
+        get_session_laps(session, load_if_needed=False)
         return session
     except Exception as exc:
         if isinstance(exc, (ValueError, FastF1DataError)):
@@ -72,9 +76,47 @@ def load_session(
         ) from exc
 
 
+def get_session_laps(session: Any, *, load_if_needed: bool = True) -> pd.DataFrame:
+    """Return a loaded session's laps, loading them once if necessary.
+
+    FastF1 raises ``DataNotLoadedError`` when ``Session.laps`` is accessed
+    before lap loading. Callers use this shared boundary rather than accessing
+    the property directly, so an unloaded session is either loaded or reported
+    as a retrieval error.
+    """
+    try:
+        from fastf1.exceptions import DataNotLoadedError
+    except ImportError:
+        DataNotLoadedError = ()
+
+    try:
+        laps = session.laps
+    except DataNotLoadedError as exc:
+        if not load_if_needed:
+            raise FastF1DataError("FastF1 returned a session without loaded lap data.") from exc
+        load = getattr(session, "load", None)
+        if not callable(load):
+            raise FastF1DataError("Session lap data is not loaded and this session cannot load it.") from exc
+        try:
+            load(laps=True, telemetry=False, weather=False, messages=False)
+            laps = session.laps
+        except Exception as load_exc:
+            raise FastF1DataError(f"Could not load session lap data: {load_exc}") from load_exc
+    except AttributeError as exc:
+        raise FastF1DataError("Session does not expose lap data.") from exc
+    except Exception as exc:
+        raise FastF1DataError(f"Could not access FastF1 session lap data: {exc}") from exc
+
+    if laps is None:
+        raise FastF1DataError("Session lap data is unavailable.")
+    if not isinstance(laps, pd.DataFrame):
+        raise FastF1DataError("Session lap data is not a pandas-compatible table.")
+    return laps
+
+
 def list_drivers(session: Any) -> list[str]:
-    """Return driver numbers present in a loaded session's lap table."""
-    laps = getattr(session, "laps", None)
+    """Return driver numbers, ensuring the session lap table is loaded first."""
+    laps = get_session_laps(session)
     if laps is None or laps.empty or "Driver" not in laps.columns:
         return []
     return sorted(laps["Driver"].dropna().astype(str).unique().tolist())
@@ -86,7 +128,7 @@ def load_driver_telemetry(session: Any, driver: str, *, lap_number: int | None =
     The returned columns are exactly those supplied by FastF1, plus any
     calculated columns FastF1 itself provides; unavailable channels stay absent.
     """
-    laps = getattr(session, "laps", None)
+    laps = get_session_laps(session)
     if laps is None or laps.empty:
         raise FastF1DataError("Session has no lap data available.")
     if "Driver" not in laps.columns:
