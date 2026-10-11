@@ -32,6 +32,10 @@ class FakeSession:
     def __init__(self, laps):
         self.laps = laps
 
+    @property
+    def weather_data(self):
+        raise DataNotLoadedError("Weather data was not loaded")
+
 
 class UnloadedFakeSession:
     def __init__(self, laps, *, fail=False):

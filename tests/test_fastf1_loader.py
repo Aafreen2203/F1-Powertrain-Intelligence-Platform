@@ -1,3 +1,4 @@
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from src.data.fastf1_loader import (
     FastF1DataError,
     enable_cache,
     get_session_laps,
+    get_session_weather,
     list_drivers,
     load_driver_telemetry,
     load_session,
@@ -35,6 +37,15 @@ def test_empty_session_drivers_returns_empty_list():
     assert list_drivers(S()) == []
 
 
+def test_unavailable_optional_weather_returns_empty_table():
+    class SessionWithoutWeather:
+        @property
+        def weather_data(self):
+            raise DataNotLoadedError("Weather data was not loaded")
+
+    assert get_session_weather(SessionWithoutWeather()).empty
+
+
 class UnloadedSession:
     def __init__(self, laps=None, *, fail=False):
         self._laps = laps
@@ -51,7 +62,11 @@ class UnloadedSession:
         self.load_calls.append(kwargs)
         if self.fail:
             raise RuntimeError("simulated FastF1 load failure")
-        self._laps = pd.DataFrame({"Driver": ["2", "1", "2"]})
+        self._laps = pd.DataFrame({
+            "Driver": ["2", "1", "2"],
+            "LapNumber": [1, 1, 2],
+            "LapTime": pd.to_timedelta([90, 91, 92], unit="s"),
+        })
 
 
 def test_list_drivers_loads_an_unloaded_fastf1_session_at_shared_boundary():
@@ -80,8 +95,82 @@ def test_session_loading_failure_is_not_returned_as_success(monkeypatch):
     monkeypatch.setattr("src.data.fastf1_loader.enable_cache", lambda *_args, **_kwargs: None)
     monkeypatch.setitem(sys.modules, "fastf1", SimpleNamespace(get_session=lambda *_args: session))
 
-    with pytest.raises(FastF1DataError, match="Could not load 2024 Example GP R: simulated FastF1 load failure"):
+    with pytest.raises(FastF1DataError, match="Could not retrieve 2024 Example GP R"):
         load_session(2024, "Example GP", "R")
+
+
+def test_partial_fastf1_load_is_rejected_and_soft_failure_is_logged(monkeypatch, caplog):
+    class PartialSession:
+        @property
+        def laps(self):
+            raise DataNotLoadedError("Lap data was not loaded")
+
+        def load(self, **_kwargs):
+            try:
+                raise ConnectionError("upstream returned HTTP 503")
+            except ConnectionError:
+                logging.getLogger("fastf1.test").debug(
+                    "Traceback for failure in lap timing data", exc_info=True
+                )
+            logging.getLogger("fastf1.test").warning("Car telemetry data is unavailable!")
+
+    session = PartialSession()
+    monkeypatch.setattr("src.data.fastf1_loader.enable_cache", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(sys.modules, "fastf1", SimpleNamespace(get_session=lambda *_args: session))
+
+    with caplog.at_level(logging.WARNING, logger="src.data.fastf1_loader"):
+        with pytest.raises(FastF1DataError, match="without loaded lap data"):
+            load_session(2025, "Bahrain Grand Prix", "FP1")
+
+    assert "lap timing data" in caplog.text
+    assert "upstream returned HTTP 503" in caplog.text
+    assert "car telemetry unavailable for 2025 Bahrain Grand Prix FP1" in caplog.text
+
+
+def test_session_without_timed_laps_is_not_a_successful_load(monkeypatch):
+    class EmptyLapsSession:
+        laps = pd.DataFrame({
+            "Driver": ["1"],
+            "LapNumber": [1],
+            "LapTime": [pd.NaT],
+        })
+
+        def load(self, **_kwargs):
+            pass
+
+    session = EmptyLapsSession()
+    monkeypatch.setattr("src.data.fastf1_loader.enable_cache", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(sys.modules, "fastf1", SimpleNamespace(get_session=lambda *_args: session))
+
+    with pytest.raises(FastF1DataError, match="no timed lap records"):
+        load_session(2025, "Bahrain Grand Prix", "FP1")
+
+
+def test_invalid_fastf1_session_is_reported_as_a_retrieval_error(monkeypatch):
+    def reject_session(*_args):
+        raise ValueError("Unknown session identifier")
+
+    monkeypatch.setattr("src.data.fastf1_loader.enable_cache", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(sys.modules, "fastf1", SimpleNamespace(get_session=reject_session))
+
+    with pytest.raises(FastF1DataError, match="FastF1 rejected 2025 Example GP FP1"):
+        load_session(2025, "Example GP", "FP1")
+
+
+def test_retry_after_partial_load_creates_a_fresh_session(monkeypatch):
+    partial = UnloadedSession()
+    partial.load = lambda **_kwargs: None
+    valid = UnloadedSession()
+    sessions = iter([partial, valid])
+    monkeypatch.setattr("src.data.fastf1_loader.enable_cache", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(sys.modules, "fastf1", SimpleNamespace(
+        get_session=lambda *_args: next(sessions)
+    ))
+
+    with pytest.raises(FastF1DataError, match="without loaded lap data"):
+        load_session(2025, "Bahrain Grand Prix", "FP1")
+
+    assert load_session(2025, "Bahrain Grand Prix", "FP1") is valid
 
 
 def test_enable_cache_defaults_to_temporary_directory(monkeypatch, tmp_path):

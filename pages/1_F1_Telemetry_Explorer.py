@@ -19,6 +19,7 @@ from src.analytics.telemetry import lap_kpis, telemetry_profile
 from src.data.fastf1_loader import (
     FastF1DataError,
     get_session_laps,
+    get_session_weather,
     list_drivers,
     list_events,
     load_driver_telemetry,
@@ -127,10 +128,11 @@ else:
             st.session_state.pop("f1_lap_comparison", None)
             selected_lap_rows = eligible[eligible["LapNumber"].isin([reference_lap, *comparison_laps])]
             context_rows = []
+            session_weather = get_session_weather(session)
             for _, lap_row in selected_lap_rows.iterrows():
                 item = {column: lap_row.get(column) for column in CONTEXT_COLUMNS if column in selected_lap_rows}
                 item["comparison_role"] = "reference" if lap_row["LapNumber"] == reference_lap else "comparison"
-                weather = lap_weather_at_midpoint(getattr(session, "weather_data", pd.DataFrame()), lap_row)
+                weather = lap_weather_at_midpoint(session_weather, lap_row)
                 for column in ("AirTemp", "TrackTemp", "Humidity", "Rainfall", "WindSpeed"):
                     item[f"midlap_{column}"] = weather.get(column) if weather is not None and column in weather else None
                 item["weather_sample_offset_s"] = weather.get("lap_midpoint_offset_seconds") if weather is not None else None
